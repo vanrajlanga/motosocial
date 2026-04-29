@@ -2,6 +2,74 @@
 // Publishes posts to Facebook, Instagram, LinkedIn, YouTube, and Twitter
 
 import { uploadImageToPublicHost, isValidHttpUrl } from './imageUploader';
+import { API_BASE_URL, API_ORIGIN } from './apiConfig';
+import { getAccessToken } from './authService';
+import { loadAPIKeys } from './apiService';
+import { refreshConnectedPageTokens } from './facebookService';
+
+// Detects "this page token is no longer valid" errors from the Graph API.
+// IMPORTANT: do NOT match the generic word "invalid" — Facebook also uses it
+// for things like "Missing or invalid image file", which is NOT a token issue.
+// Stay strict: only canonical OAuth/token errors should match here.
+const isFbAuthExpired = (result: any): boolean => {
+  const e = result?.error || {};
+  if (e.code === 190) return true;
+  if (e.type === 'OAuthException' && [102, 458, 459, 460, 463, 464, 467].includes(e.code))
+    return true;
+  if (typeof e.message === 'string') {
+    return /\b(token|session)\b.{0,40}\b(expired|invalid|revoked)\b/i.test(e.message);
+  }
+  return false;
+};
+
+// Tries to refresh the page access tokens stored in our backend using the
+// user's saved FB user token. Returns the fresh access_token for the given
+// pageId if we managed to get one, or null otherwise.
+const tryRefreshFacebookPageToken = async (pageId: string): Promise<string | null> => {
+  try {
+    const apiKeys = await loadAPIKeys();
+    const userToken = apiKeys?.facebookAccessToken?.trim();
+    if (!userToken) return null;
+    const { pages } = await refreshConnectedPageTokens(userToken);
+    const page = pages.find((p: any) => p.pageId === pageId);
+    return page?.pageAccessToken || null;
+  } catch (err) {
+    console.warn('[publisher] refresh tokens failed:', err);
+    return null;
+  }
+};
+
+// Social platforms can't reach our backend's localhost URLs. If the image
+// lives on our own server, ask the backend to re-upload it to a public host
+// (ImgBB) and swap the URL before publishing.
+const toPubliclyReachableUrl = async (url?: string): Promise<string | undefined> => {
+  if (!url) return url;
+  const needsProxy =
+    url.startsWith(API_ORIGIN) ||
+    /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(?::\d+)?\//i.test(url) ||
+    /^https?:\/\/[^/]+\.(?:local|lan|internal)(?::\d+)?\//i.test(url);
+  if (!needsProxy) return url;
+
+  try {
+    const token = getAccessToken();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const res = await fetch(`${API_BASE_URL}/expose-public`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ url }),
+    });
+    const data = await res.json();
+    if (res.ok && data.success && data.publicUrl) {
+      console.log('[publisher] exposed', url, '→', data.publicUrl);
+      return data.publicUrl;
+    }
+    console.warn('[publisher] expose-public failed:', data);
+  } catch (err) {
+    console.warn('[publisher] expose-public error:', err);
+  }
+  return url; // best effort; FB will still reject but at least we tried
+};
 
 interface PublishPostData {
   caption: string;
@@ -43,22 +111,84 @@ const getConnectionData = (platform: string, platformId?: string) => {
 // ============================================
 // FACEBOOK POSTING
 // ============================================
+//
+// STRATEGY: page access tokens that come out of /me/accounts are short-lived
+// when the user token is short-lived. Instead of trusting whatever is sitting
+// in localStorage, we always start by ASKING Facebook for a fresh page token
+// via the user token — this is one cheap HTTP call and removes the entire
+// "stale token" class of failures. We persist the fresh token on the way
+// through so the connected-pages list in Settings stays accurate.
+const fetchFreshPageToken = async (
+  pageId: string
+): Promise<{ token: string } | { error: string }> => {
+  const apiKeys = await loadAPIKeys();
+  const userToken = (apiKeys?.facebookAccessToken || '').trim();
+  if (!userToken) {
+    return {
+      error:
+        'No Facebook user access token saved. Open Settings → API Keys, paste a token, click Save.',
+    };
+  }
+  try {
+    const r = await fetch(
+      `https://graph.facebook.com/v18.0/me/accounts?fields=id,name,access_token&access_token=${encodeURIComponent(
+        userToken
+      )}`
+    );
+    const body: any = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      if (body?.error?.code === 190) {
+        return {
+          error:
+            'Your Facebook user access token in Settings → API Keys is expired. ' +
+            'Replace it with a fresh token from Graph API Explorer (with pages_show_list, pages_read_engagement, pages_manage_posts), Save, then try again.',
+        };
+      }
+      return { error: body?.error?.message || `Facebook returned HTTP ${r.status}` };
+    }
+    const page = (body?.data || []).find((p: any) => p.id === pageId);
+    if (!page) {
+      return {
+        error:
+          `This Facebook user does not own / admin page ${pageId}. ` +
+          'Open Settings → Social Media → Fetch My Pages and pick a page you actually administer.',
+      };
+    }
+
+    // Persist the fresh token so other places (UI status, future calls) see it.
+    refreshConnectedPageTokens(userToken).catch((e) =>
+      console.warn('[publisher] background refresh persist failed:', e)
+    );
+
+    return { token: page.access_token };
+  } catch (err: any) {
+    return { error: err.message || 'Network error talking to Facebook' };
+  }
+};
+
 const postToFacebook = async (data: PublishPostData, platformId: string): Promise<PublishResult> => {
   // Extract page ID from platformId (e.g., "facebook-123456" -> "123456")
   const pageId = platformId.replace('facebook-', '');
-  
+
   const connection = getConnectionData('facebook', pageId);
-  
-  if (!connection || !connection.connected || !connection.accessToken) {
+  if (!connection || !connection.connected) {
     return {
       platform: 'Facebook',
       success: false,
-      error: 'Facebook account not connected. Please connect in Settings.',
+      error: 'Facebook page not connected. Open Settings → Social Media and connect a page.',
     };
   }
 
+  // Always pull a fresh page access token before posting — eliminates the
+  // entire "stored token has expired" failure mode.
+  const tokenResult = await fetchFreshPageToken(pageId);
+  if ('error' in tokenResult) {
+    return { platform: 'Facebook', success: false, error: tokenResult.error };
+  }
+  const accessToken = tokenResult.token;
+  console.log('[publisher] using freshly-minted page token for', pageId);
+
   try {
-    const accessToken = connection.accessToken;
 
     // If image is provided, upload to Imgur first to get a public URL
     let publicImageUrl = data.imageUrl;
@@ -101,20 +231,54 @@ const postToFacebook = async (data: PublishPostData, platformId: string): Promis
     // If image is provided, upload to photos endpoint instead
     if (publicImageUrl) {
       const photoEndpoint = `https://graph.facebook.com/v18.0/${pageId}/photos`;
-      
-      const response = await fetch(photoEndpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          url: publicImageUrl,
-          caption: data.caption,
-          access_token: accessToken,
-        }),
-      });
 
-      const result = await response.json();
+      // STRATEGY: read the image as a Blob (works for localhost backend AND
+      // any remote URL the browser can fetch) and stream the bytes directly
+      // to Facebook's photo endpoint via multipart `source`. Facebook never
+      // has to fetch a URL — eliminates the "Missing or invalid image file"
+      // failure mode caused by localhost / temporary host URLs.
+      let imageBlob: Blob | null = null;
+      try {
+        const fetchRes = await fetch(publicImageUrl);
+        if (fetchRes.ok) imageBlob = await fetchRes.blob();
+      } catch (e) {
+        console.warn('[publisher] could not load image as blob, falling back to url=', e);
+      }
+
+      const callPhotosApi = async (token: string) => {
+        if (imageBlob) {
+          // Multipart upload — bytes go straight to FB.
+          const form = new FormData();
+          form.append('source', imageBlob, 'post-image.png');
+          form.append('caption', data.caption);
+          form.append('access_token', token);
+          return fetch(photoEndpoint, { method: 'POST', body: form });
+        }
+        // Fallback: tell FB to fetch the URL (legacy path).
+        return fetch(photoEndpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            url: publicImageUrl,
+            caption: data.caption,
+            access_token: token,
+          }),
+        });
+      };
+
+      let response = await callPhotosApi(accessToken);
+      let result = await response.json();
+
+      // Token expired? Try refreshing once using the saved user token.
+      if (!response.ok && isFbAuthExpired(result)) {
+        console.warn('[publisher] FB token expired — attempting one-shot refresh');
+        const fresh = await tryRefreshFacebookPageToken(pageId);
+        if (fresh) {
+          console.log('[publisher] got fresh page token, retrying publish');
+          response = await callPhotosApi(fresh);
+          result = await response.json();
+        }
+      }
 
       if (response.ok && result.id) {
         return {
@@ -123,13 +287,15 @@ const postToFacebook = async (data: PublishPostData, platformId: string): Promis
           postId: result.id,
           postUrl: `https://www.facebook.com/${result.id}`,
         };
-      } else {
-        // Check if it's a token expiration error
-        if (result.error?.code === 190 || result.error?.message?.includes('expired')) {
-          throw new Error('Facebook access token has expired. Please reconnect your Facebook account in Settings → Social Media Connections.');
-        }
-        throw new Error(result.error?.message || 'Failed to post to Facebook');
       }
+      if (isFbAuthExpired(result)) {
+        throw new Error(
+          'Facebook access token has expired and could not be auto-refreshed. ' +
+            'Please update your Facebook Access Token in Settings → API Keys, ' +
+            'then click "Fetch My Pages" once to refresh page tokens.'
+        );
+      }
+      throw new Error(result.error?.message || 'Failed to post to Facebook');
     } else {
       // Text-only post
       const response = await fetch(endpoint, {
@@ -447,6 +613,16 @@ export const publishToSocialMedia = async (data: PublishPostData): Promise<Publi
     } catch (error) {
       console.error('Image upload failed:', error);
     }
+  }
+
+  // Note: Facebook now receives image *bytes* directly via multipart upload
+  // (see postToFacebook), so no rehost is needed for FB. Instagram & LinkedIn
+  // still expect a publicly-fetchable URL, so we only rehost in that case.
+  const needsPublicUrl = data.platforms.some((p) =>
+    /^(instagram|linkedin)/i.test(p)
+  );
+  if (needsPublicUrl) {
+    imageUrl = await toPubliclyReachableUrl(imageUrl);
   }
 
   const publishData = { ...data, imageUrl };

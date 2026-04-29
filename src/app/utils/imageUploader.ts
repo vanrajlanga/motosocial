@@ -2,8 +2,8 @@
 // Uploads images to public hosting for social media APIs
 
 import { getAPIKeys } from './apiService';
-import { supabase } from './supabaseClient';
-import { projectId, publicAnonKey } from '/utils/supabase/info';
+import { API_BASE_URL } from './apiConfig';
+import { getAccessToken } from './authService';
 
 /**
  * Upload image via SERVER (no CORS issues!)
@@ -16,11 +16,13 @@ export const uploadViaServer = async (imageFile: File): Promise<string> => {
     const formData = new FormData();
     formData.append('image', imageFile);
 
-    const response = await fetch(`https://${projectId}.supabase.co/functions/v1/make-server-782899ec/upload-image`, {
+    const token = getAccessToken();
+    const headers: HeadersInit = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    const response = await fetch(`${API_BASE_URL}/upload-image`, {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${publicAnonKey}`,
-      },
+      headers,
       body: formData,
     });
 
@@ -39,43 +41,11 @@ export const uploadViaServer = async (imageFile: File): Promise<string> => {
 };
 
 /**
- * Upload image to Supabase Storage (MOST RELIABLE!)
- * This is our PRIMARY method - always try this first
+ * DEPRECATED — Supabase Storage has been replaced by the Node.js backend
+ * (`uploadViaServer` above). Kept as a stub for call-site compatibility.
  */
 export const uploadToSupabase = async (imageFile: File): Promise<string> => {
-  try {
-    console.log('📦 Uploading to Supabase Storage...');
-    
-    // Generate unique filename
-    const timestamp = Date.now();
-    const randomStr = Math.random().toString(36).substring(7);
-    const extension = imageFile.name.split('.').pop() || 'jpg';
-    const fileName = `social-media/${timestamp}-${randomStr}.${extension}`;
-    
-    // Upload to Supabase Storage
-    const { data, error } = await supabase.storage
-      .from('make-782899ec-public')
-      .upload(fileName, imageFile, {
-        cacheControl: '3600',
-        upsert: false
-      });
-
-    if (error) {
-      console.error('Supabase upload error:', error);
-      throw new Error(error.message);
-    }
-
-    // Get public URL
-    const { data: { publicUrl } } = supabase.storage
-      .from('make-782899ec-public')
-      .getPublicUrl(fileName);
-
-    console.log('✅ Supabase upload successful:', publicUrl);
-    return publicUrl;
-  } catch (error: any) {
-    console.error('Supabase Storage error:', error);
-    throw new Error('Failed to upload to Supabase: ' + error.message);
-  }
+  return uploadViaServer(imageFile);
 };
 
 /**

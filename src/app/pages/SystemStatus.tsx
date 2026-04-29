@@ -1,11 +1,11 @@
 import { useState, useEffect } from 'react';
 import { CheckCircle2, XCircle, AlertCircle, RefreshCw } from 'lucide-react';
-import { projectId, publicAnonKey } from '/utils/supabase/info';
+import { API_BASE_URL, API_ORIGIN } from '../utils/apiConfig';
 import { getAccessToken, getCurrentUser } from '../utils/authService';
 
 export function SystemStatus() {
   const [status, setStatus] = useState({
-    supabaseConfig: false,
+    backendConfig: false,
     accessToken: false,
     user: false,
     serverHealth: false,
@@ -15,26 +15,16 @@ export function SystemStatus() {
 
   const checkStatus = async () => {
     setLoading(true);
-    
-    // Check Supabase config
-    const supabaseOk = !!projectId && !!publicAnonKey;
-    
-    // Check access token
+
+    const backendOk = !!API_ORIGIN;
     const token = getAccessToken();
     const hasToken = !!token;
-    
-    // Check user
     const user = getCurrentUser();
     const hasUser = !!user;
-    
-    // Check server health
+
     let serverOk = false;
     try {
-      const response = await fetch(`https://${projectId}.supabase.co/functions/v1/make-server-782899ec/health`, {
-        headers: {
-          'Authorization': `Bearer ${publicAnonKey}`,
-        },
-      });
+      const response = await fetch(`${API_BASE_URL}/health`);
       const data = await response.json();
       setServerResponse(data);
       serverOk = response.ok && data.status === 'ok';
@@ -42,14 +32,14 @@ export function SystemStatus() {
       console.error('Server health check failed:', error);
       setServerResponse({ error: String(error) });
     }
-    
+
     setStatus({
-      supabaseConfig: supabaseOk,
+      backendConfig: backendOk,
       accessToken: hasToken,
       user: hasUser,
       serverHealth: serverOk,
     });
-    
+
     setLoading(false);
   };
 
@@ -83,7 +73,7 @@ export function SystemStatus() {
       </div>
 
       <div className="space-y-3">
-        <StatusItem label="Supabase Configuration" ok={status.supabaseConfig} />
+        <StatusItem label="Backend URL Configured" ok={status.backendConfig} />
         <StatusItem label="Access Token Present" ok={status.accessToken} />
         <StatusItem label="User Logged In" ok={status.user} />
         <StatusItem label="Server Health" ok={status.serverHealth} />
@@ -91,8 +81,8 @@ export function SystemStatus() {
 
       <div className="bg-slate-900 text-green-400 p-4 rounded-lg font-mono text-sm">
         <div className="mb-2 text-slate-400">// Configuration</div>
-        <div>Project ID: {projectId || 'NOT SET'}</div>
-        <div>Has Anon Key: {publicAnonKey ? 'YES' : 'NO'}</div>
+        <div>Backend URL: {API_ORIGIN || 'NOT SET'}</div>
+        <div>API Base: {API_BASE_URL}</div>
         <div className="mt-3 mb-2 text-slate-400">// Current User</div>
         <div>Email: {getCurrentUser()?.email || 'Not logged in'}</div>
         <div>Name: {getCurrentUser()?.name || 'N/A'}</div>
@@ -107,8 +97,8 @@ export function SystemStatus() {
             <div>
               <p className="font-semibold text-yellow-900 mb-1">Server Connection Issue</p>
               <p className="text-sm text-yellow-800">
-                The Supabase server is not responding. This may be normal on first load.
-                Please refresh the page and try again.
+                The backend server at {API_ORIGIN} is not responding. Make sure
+                it's running (<code>npm run dev</code> in the <code>backend/</code> folder).
               </p>
             </div>
           </div>
@@ -135,13 +125,13 @@ export function SystemStatus() {
           <div>
             <p className="font-semibold text-green-900 mb-1">How Authentication Works</p>
             <p className="text-sm text-green-800 mb-2">
-              This app uses Supabase Authentication with JWT tokens:
+              This app uses a local Node.js + MySQL backend with JWT tokens:
             </p>
             <ul className="text-xs text-green-700 list-disc list-inside space-y-1">
-              <li>Login generates a Supabase session with access_token (JWT)</li>
-              <li>The JWT is stored in localStorage and used for all API calls</li>
-              <li>Server validates JWT with Supabase Auth service</li>
-              <li>If JWT is invalid, you'll see "401 Unauthorized" errors</li>
+              <li>Login hits <code>POST /api/auth/signin</code> and receives a JWT</li>
+              <li>The JWT is stored in localStorage and sent as <code>Authorization: Bearer</code></li>
+              <li>Backend verifies the JWT with the <code>JWT_SECRET</code> from <code>.env</code></li>
+              <li>If JWT is invalid/expired, you'll see "401 Unauthorized" errors</li>
             </ul>
           </div>
         </div>

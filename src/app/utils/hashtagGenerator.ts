@@ -19,14 +19,16 @@ export const generateHashtags = async (content: string, count: number = 10): Pro
   }
 
   try {
-    const prompt = `Generate ${count} relevant, trending hashtags for this social media post. Return ONLY the hashtags separated by spaces, without numbering or explanation.
+    const prompt = `Generate ${count} relevant, trending hashtags for this Motopsy social media post. Return ONLY the hashtags separated by spaces, without numbering or explanation.
 
 Post content: "${content}"
 
 Requirements:
-- Mix of popular and niche hashtags
+- ALWAYS include #Motopsy as the first hashtag (brand tag — non-negotiable).
+- Also consider #MotopsyAI or #MotopsyIndia where they fit naturally.
+- Target market: INDIA only — include India-specific hashtags where relevant (#India, #IndianMarket, city tags like #Mumbai, #Delhi, #Bengaluru, industry tags like #IndianAuto, #MadeInIndia, #DigitalIndia, etc.)
+- Mix of popular Indian hashtags + niche topic hashtags
 - Relevant to the content
-- Include branded hashtags if applicable
 - Format: #Hashtag #AnotherHashtag (no spaces in hashtags)
 - No explanations, just the hashtags`;
 
@@ -41,7 +43,9 @@ Requirements:
         messages: [
           {
             role: 'system',
-            content: 'You are a social media expert specializing in hashtag optimization for maximum reach and engagement.',
+            content:
+              'You are a social media expert specialising in hashtag optimisation for the INDIAN market. ' +
+              'Produce hashtag sets that trend in India and drive reach among Indian audiences.',
           },
           {
             role: 'user',
@@ -62,10 +66,13 @@ Requirements:
     const hashtagsText = data.choices[0].message.content.trim();
 
     // Extract hashtags from the response
-    const hashtags = hashtagsText
+    let hashtags: string[] = hashtagsText
       .split(/\s+/)
       .filter((tag: string) => tag.startsWith('#'))
       .slice(0, count);
+
+    // Safety-net: guarantee #Motopsy is always first.
+    hashtags = ensureMotopsyFirst(hashtags, count);
 
     return hashtags.length > 0 ? hashtags : generateBasicHashtags(content, count);
   } catch (error) {
@@ -73,6 +80,15 @@ Requirements:
     // Fallback to basic hashtag generation
     return generateBasicHashtags(content, count);
   }
+};
+
+/**
+ * Ensures #Motopsy is always present as the first hashtag. Keeps list length <= count.
+ */
+const ensureMotopsyFirst = (hashtags: string[], count: number): string[] => {
+  const withoutMotopsy = hashtags.filter((h) => !/^#motopsy$/i.test(h));
+  const out = ['#Motopsy', ...withoutMotopsy];
+  return out.slice(0, Math.max(count, 1));
 };
 
 /**
@@ -86,18 +102,18 @@ const generateBasicHashtags = (content: string, count: number): string[] => {
     .split(/\s+/)
     .filter((word) => word.length > 3); // Only words longer than 3 characters
 
-  // Common social media hashtags
+  // Common India-biased hashtags — Motopsy always first.
   const commonHashtags = [
+    '#Motopsy',
+    '#MotopsyAI',
+    '#India',
     '#Marketing',
     '#SocialMedia',
     '#Business',
     '#Digital',
     '#Content',
-    '#Engagement',
-    '#Brand',
-    '#Strategy',
     '#Growth',
-    '#Success',
+    '#MadeInIndia',
   ];
 
   // Create hashtags from key words
@@ -105,11 +121,18 @@ const generateBasicHashtags = (content: string, count: number): string[] => {
     .slice(0, 5)
     .map((word) => `#${word.charAt(0).toUpperCase() + word.slice(1)}`);
 
-  // Combine and deduplicate
-  const allHashtags = [...wordHashtags, ...commonHashtags];
-  const uniqueHashtags = Array.from(new Set(allHashtags));
+  // Motopsy first, then topic words, then common tags. Dedupe preserving order.
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  for (const h of ['#Motopsy', ...wordHashtags, ...commonHashtags]) {
+    const k = h.toLowerCase();
+    if (!seen.has(k)) {
+      seen.add(k);
+      ordered.push(h);
+    }
+  }
 
-  return uniqueHashtags.slice(0, count);
+  return ordered.slice(0, count);
 };
 
 /**

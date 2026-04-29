@@ -1,0 +1,28 @@
+# dependencies
+node_modules
+.pnp
+.pnp.js
+
+# build output
+dist
+dist-ssr
+build
+*.local
+
+# env files (never commit secrets)
+.env
+.env.local
+.env.production
+.env.*.local
+
+# logs
+*.log
+frontend.log
+backend/server.log
+backend/uploads/
+
+# editor
+.vscode
+.idea
+.DS_Store
+Thumbs.db

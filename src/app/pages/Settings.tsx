@@ -1,7 +1,29 @@
 import { useState, useEffect } from 'react';
 import { Key, Facebook, Instagram, Linkedin, Youtube, Twitter, Save, CheckCircle2, AlertCircle, Eye, EyeOff, ExternalLink, Plus, Trash2, RefreshCw, Loader2, Bug } from 'lucide-react';
 import { getAPIKeys, saveAPIKeys, loadAPIKeys } from '../utils/apiService';
-import { fetchFacebookPages, validateFacebookToken, getConnectedFacebookPages, connectFacebookPage, disconnectFacebookPage, loadFacebookPages, saveConnectedFacebookPages, type ConnectedFacebookPage } from '../utils/facebookService';
+import { fetchFacebookPages, validateFacebookToken, getConnectedFacebookPages, connectFacebookPage, disconnectFacebookPage, loadFacebookPages, saveConnectedFacebookPages, refreshConnectedPageTokens, type ConnectedFacebookPage } from '../utils/facebookService';
+import {
+  fetchInstagramAccounts,
+  loadConnectedInstagram,
+  connectInstagramAccount,
+  disconnectInstagramAccount,
+  type DiscoveredInstagramAccount,
+} from '../utils/instagramService';
+import {
+  fetchLinkedInAccounts,
+  loadConnectedLinkedIn,
+  connectLinkedInAccount,
+  disconnectLinkedInAccount,
+  type DiscoveredLinkedInAccount,
+} from '../utils/linkedinService';
+import {
+  fetchTwitterAccount,
+  loadConnectedTwitter,
+  connectTwitterAccount,
+  disconnectTwitterAccount,
+  type DiscoveredTwitterAccount,
+} from '../utils/twitterService';
+import type { ConnectedAccount } from '../utils/socialConnections';
 import { Link } from 'react-router';
 
 export function Settings() {
@@ -11,6 +33,21 @@ export function Settings() {
   const [loadingFacebookPages, setLoadingFacebookPages] = useState(false);
   const [facebookPagesAvailable, setFacebookPagesAvailable] = useState<any[]>([]);
   const [connectedFacebookPages, setConnectedFacebookPages] = useState<ConnectedFacebookPage[]>([]);
+
+  // Instagram
+  const [loadingInstagram, setLoadingInstagram] = useState(false);
+  const [instagramAvailable, setInstagramAvailable] = useState<DiscoveredInstagramAccount[]>([]);
+  const [connectedInstagram, setConnectedInstagram] = useState<ConnectedAccount[]>([]);
+
+  // LinkedIn
+  const [loadingLinkedIn, setLoadingLinkedIn] = useState(false);
+  const [linkedInAvailable, setLinkedInAvailable] = useState<DiscoveredLinkedInAccount[]>([]);
+  const [connectedLinkedIn, setConnectedLinkedIn] = useState<ConnectedAccount[]>([]);
+
+  // Twitter
+  const [loadingTwitter, setLoadingTwitter] = useState(false);
+  const [twitterAvailable, setTwitterAvailable] = useState<DiscoveredTwitterAccount[]>([]);
+  const [connectedTwitter, setConnectedTwitter] = useState<ConnectedAccount[]>([]);
 
   const [apiKeys, setApiKeys] = useState({
     openai: '',
@@ -36,15 +73,139 @@ export function Settings() {
       
       const connected = await loadFacebookPages();
       setConnectedFacebookPages(connected);
-      
-      // Show notification that default keys are available
+
+      const [ig, li, tw] = await Promise.all([
+        loadConnectedInstagram(),
+        loadConnectedLinkedIn(),
+        loadConnectedTwitter(),
+      ]);
+      setConnectedInstagram(ig);
+      setConnectedLinkedIn(li);
+      setConnectedTwitter(tw);
+
       if (savedKeys.openai && savedKeys.gemini && savedKeys.facebookAccessToken) {
         console.log('✅ Default API keys are loaded and ready to use!');
       }
     };
-    
+
     loadData();
   }, []);
+
+  // ---------- Instagram handlers ----------
+  const handleFetchInstagram = async () => {
+    if (!apiKeys.facebookAccessToken?.trim()) {
+      alert('⚠️ Instagram Business needs your Facebook Access Token. Add it in API Keys first.');
+      setActiveTab('api');
+      return;
+    }
+    setLoadingInstagram(true);
+    try {
+      const accounts = await fetchInstagramAccounts(apiKeys.facebookAccessToken);
+      setInstagramAvailable(accounts);
+      alert(`✅ Found ${accounts.length} Instagram account(s). Select the ones to connect.`);
+    } catch (error: any) {
+      alert(`❌ ${error.message}`);
+    } finally {
+      setLoadingInstagram(false);
+    }
+  };
+  const handleConnectInstagram = async (acc: DiscoveredInstagramAccount) => {
+    try {
+      const updated = await connectInstagramAccount(acc);
+      setConnectedInstagram(updated);
+      setInstagramAvailable(instagramAvailable.filter((a) => a.igUserId !== acc.igUserId));
+      alert(`✅ Connected @${acc.username}`);
+    } catch (error: any) {
+      alert(`❌ ${error.message}`);
+    }
+  };
+  const handleDisconnectInstagram = async (id: string) => {
+    const a = connectedInstagram.find((x) => x.id === id);
+    if (!a || !window.confirm(`Disconnect "${a.name}"?`)) return;
+    try {
+      const updated = await disconnectInstagramAccount(id);
+      setConnectedInstagram(updated);
+    } catch (error: any) {
+      alert(`❌ ${error.message}`);
+    }
+  };
+
+  // ---------- LinkedIn handlers ----------
+  const handleFetchLinkedIn = async () => {
+    if (!apiKeys.linkedinAccessToken?.trim()) {
+      alert('⚠️ Please enter your LinkedIn Access Token in API Keys first.');
+      setActiveTab('api');
+      return;
+    }
+    setLoadingLinkedIn(true);
+    try {
+      const accounts = await fetchLinkedInAccounts(apiKeys.linkedinAccessToken);
+      setLinkedInAvailable(accounts);
+      alert(`✅ Found ${accounts.length} LinkedIn account(s). Select which to connect.`);
+    } catch (error: any) {
+      alert(`❌ ${error.message}`);
+    } finally {
+      setLoadingLinkedIn(false);
+    }
+  };
+  const handleConnectLinkedIn = async (acc: DiscoveredLinkedInAccount) => {
+    try {
+      const updated = await connectLinkedInAccount(acc);
+      setConnectedLinkedIn(updated);
+      setLinkedInAvailable(linkedInAvailable.filter((a) => a.urn !== acc.urn));
+      alert(`✅ Connected "${acc.name}"`);
+    } catch (error: any) {
+      alert(`❌ ${error.message}`);
+    }
+  };
+  const handleDisconnectLinkedIn = async (urn: string) => {
+    const a = connectedLinkedIn.find((x) => x.id === urn);
+    if (!a || !window.confirm(`Disconnect "${a.name}"?`)) return;
+    try {
+      const updated = await disconnectLinkedInAccount(urn);
+      setConnectedLinkedIn(updated);
+    } catch (error: any) {
+      alert(`❌ ${error.message}`);
+    }
+  };
+
+  // ---------- Twitter handlers ----------
+  const handleFetchTwitter = async () => {
+    if (!apiKeys.twitterAccessToken?.trim()) {
+      alert('⚠️ Please enter your Twitter/X Access Token in API Keys first.');
+      setActiveTab('api');
+      return;
+    }
+    setLoadingTwitter(true);
+    try {
+      const accounts = await fetchTwitterAccount(apiKeys.twitterAccessToken);
+      setTwitterAvailable(accounts);
+    } catch (error: any) {
+      alert(`❌ ${error.message}`);
+    } finally {
+      setLoadingTwitter(false);
+    }
+  };
+  const handleConnectTwitter = async (acc: DiscoveredTwitterAccount) => {
+    try {
+      const updated = await connectTwitterAccount(acc);
+      setConnectedTwitter(updated);
+      setTwitterAvailable(twitterAvailable.filter((a) => a.id !== acc.id));
+      alert(`✅ Connected @${acc.username}`);
+    } catch (error: any) {
+      alert(`❌ ${error.message}`);
+    }
+  };
+  const handleDisconnectTwitter = async (id: string) => {
+    const a = connectedTwitter.find((x) => x.id === id);
+    if (!a || !window.confirm(`Disconnect "${a.name}"?`)) return;
+    try {
+      const updated = await disconnectTwitterAccount(id);
+      setConnectedTwitter(updated);
+    } catch (error: any) {
+      alert(`❌ ${error.message}`);
+    }
+  };
 
   const toggleShowKey = (key: string) => {
     setShowKeys({ ...showKeys, [key]: !showKeys[key] });
@@ -74,13 +235,34 @@ export function Settings() {
 
       // Fetch pages
       const pages = await fetchFacebookPages(apiKeys.facebookAccessToken);
-      setFacebookPagesAvailable(pages);
-      
-      if (pages.length === 0) {
-        alert('⚠️ No Facebook pages found. Make sure you manage at least one Facebook page.');
-      } else {
-        alert(`✅ Found ${pages.length} Facebook page(s)! Select the ones you want to connect.`);
+
+      // Filter "available to connect" to those NOT already connected; for the
+      // already-connected ones, refresh their stored access tokens silently.
+      const connectedIds = new Set(connectedFacebookPages.map((p) => p.pageId));
+      const fresh = pages.filter((p) => !connectedIds.has(p.id));
+      setFacebookPagesAvailable(fresh);
+
+      let refreshedCount = 0;
+      if (connectedIds.size > 0) {
+        try {
+          const result = await refreshConnectedPageTokens(apiKeys.facebookAccessToken);
+          refreshedCount = result.refreshed;
+          if (refreshedCount > 0) setConnectedFacebookPages(result.pages);
+        } catch (refreshErr) {
+          console.warn('Token refresh failed:', refreshErr);
+        }
       }
+
+      const lines: string[] = [];
+      if (refreshedCount > 0) lines.push(`🔄 Refreshed ${refreshedCount} existing page token(s).`);
+      if (fresh.length > 0)
+        lines.push(`✅ Found ${fresh.length} new page(s). Select which to connect.`);
+      else if (refreshedCount === 0 && pages.length === 0)
+        lines.push('⚠️ No Facebook pages found. Make sure you manage at least one Facebook page.');
+      else if (fresh.length === 0)
+        lines.push('All your pages are already connected — tokens refreshed.');
+
+      alert(lines.join('\n'));
     } catch (error: any) {
       console.error('Error fetching Facebook pages:', error);
       alert(`❌ Error: ${error.message}\n\nMake sure your access token has the 'pages_show_list' permission.`);
@@ -92,13 +274,11 @@ export function Settings() {
   // Connect a Facebook page
   const handleConnectFacebookPage = async (page: any) => {
     try {
-      connectFacebookPage(page);
-      const updated = await loadFacebookPages();
+      const updated = await connectFacebookPage(page);
       setConnectedFacebookPages(updated);
       alert(`✅ Connected to "${page.name}" successfully!`);
-      
       // Remove from available list
-      setFacebookPagesAvailable(facebookPagesAvailable.filter(p => p.id !== page.id));
+      setFacebookPagesAvailable(facebookPagesAvailable.filter((p) => p.id !== page.id));
     } catch (error: any) {
       alert(`❌ ${error.message}`);
     }
@@ -106,12 +286,15 @@ export function Settings() {
 
   // Disconnect a Facebook page
   const handleDisconnectFacebookPage = async (pageId: string) => {
-    const page = connectedFacebookPages.find(p => p.pageId === pageId);
-    if (page && window.confirm(`Are you sure you want to disconnect "${page.pageName}"?`)) {
-      disconnectFacebookPage(pageId);
-      const updated = await loadFacebookPages();
+    const page = connectedFacebookPages.find((p) => p.pageId === pageId);
+    if (!page) return;
+    if (!window.confirm(`Are you sure you want to disconnect "${page.pageName}"?`)) return;
+    try {
+      const updated = await disconnectFacebookPage(pageId);
       setConnectedFacebookPages(updated);
       alert(`✅ Disconnected from "${page.pageName}" successfully!`);
+    } catch (error: any) {
+      alert(`❌ ${error.message}`);
     }
   };
 
@@ -489,44 +672,260 @@ export function Settings() {
               )}
             </div>
 
-            {/* Instagram (Coming Soon) */}
-            <div className="bg-white rounded-xl shadow-sm p-6 opacity-50">
-              <div className="flex items-center gap-2 mb-4">
-                <Instagram className="w-7 h-7 text-pink-600" />
-                <h2 className="text-2xl font-bold text-slate-900">Instagram Accounts</h2>
-              </div>
-              <p className="text-slate-600">Instagram account management coming soon...</p>
-            </div>
+            {/* Instagram */}
+            <PlatformSection
+              icon={<Instagram className="w-7 h-7 text-pink-600" />}
+              title="Instagram Accounts"
+              subtitle="Connect Instagram Business/Creator accounts linked to your Facebook Pages"
+              accentBg="bg-pink-600"
+              loading={loadingInstagram}
+              onFetch={handleFetchInstagram}
+              connected={connectedInstagram}
+              available={instagramAvailable.map((a) => ({
+                id: a.igUserId,
+                name: a.name,
+                handle: '@' + a.username,
+                avatar: a.profilePicture,
+                extra: a,
+              }))}
+              onConnect={(opt) => handleConnectInstagram(opt.extra)}
+              onDisconnect={handleDisconnectInstagram}
+              helpLines={[
+                'Enter your Facebook Access Token in API Keys (Instagram rides on the same token)',
+                'Your Instagram must be a Business/Creator account linked to a Facebook Page',
+                'Required scopes: instagram_basic, pages_show_list, pages_read_engagement',
+              ]}
+            />
 
-            {/* LinkedIn (Coming Soon) */}
-            <div className="bg-white rounded-xl shadow-sm p-6 opacity-50">
-              <div className="flex items-center gap-2 mb-4">
-                <Linkedin className="w-7 h-7 text-blue-700" />
-                <h2 className="text-2xl font-bold text-slate-900">LinkedIn Pages</h2>
-              </div>
-              <p className="text-slate-600">LinkedIn page management coming soon...</p>
-            </div>
+            {/* LinkedIn */}
+            <PlatformSection
+              icon={<Linkedin className="w-7 h-7 text-blue-700" />}
+              title="LinkedIn Accounts"
+              subtitle="Connect your personal profile and organizations you administer"
+              accentBg="bg-blue-700"
+              loading={loadingLinkedIn}
+              onFetch={handleFetchLinkedIn}
+              connected={connectedLinkedIn}
+              available={linkedInAvailable.map((a) => ({
+                id: a.urn,
+                name: a.name,
+                handle: a.kind === 'organization' ? 'Organization' : 'Personal',
+                avatar: a.avatar,
+                extra: a,
+              }))}
+              onConnect={(opt) => handleConnectLinkedIn(opt.extra)}
+              onDisconnect={handleDisconnectLinkedIn}
+              helpLines={[
+                'Save your LinkedIn Access Token in API Keys first',
+                'OAuth 2.0 token needs scopes: openid, profile, email',
+                'For organization pages also add: rw_organization_admin, w_organization_social',
+              ]}
+            />
 
-            {/* Twitter (Coming Soon) */}
-            <div className="bg-white rounded-xl shadow-sm p-6 opacity-50">
-              <div className="flex items-center gap-2 mb-4">
-                <Twitter className="w-7 h-7 text-sky-500" />
-                <h2 className="text-2xl font-bold text-slate-900">Twitter/X Accounts</h2>
-              </div>
-              <p className="text-slate-600">Twitter account management coming soon...</p>
-            </div>
+            {/* Twitter / X */}
+            <PlatformSection
+              icon={<Twitter className="w-7 h-7 text-sky-500" />}
+              title="Twitter/X Accounts"
+              subtitle="Connect your X account via an OAuth 2.0 user-context token"
+              accentBg="bg-sky-500"
+              loading={loadingTwitter}
+              onFetch={handleFetchTwitter}
+              connected={connectedTwitter}
+              available={twitterAvailable.map((a) => ({
+                id: a.id,
+                name: a.name,
+                handle: '@' + a.username,
+                avatar: a.avatar,
+                extra: a,
+              }))}
+              onConnect={(opt) => handleConnectTwitter(opt.extra)}
+              onDisconnect={handleDisconnectTwitter}
+              helpLines={[
+                'Save your Twitter/X Access Token in API Keys first',
+                'Must be a USER-CONTEXT OAuth 2.0 token, not an App-only Bearer token',
+                'Required scopes: tweet.read, users.read (add tweet.write to post later)',
+              ]}
+            />
 
-            {/* YouTube (Coming Soon) */}
-            <div className="bg-white rounded-xl shadow-sm p-6 opacity-50">
+            {/* YouTube (Coming Soon — requires YouTube Partner Program) */}
+            <div className="bg-white rounded-xl shadow-sm p-6 opacity-60">
               <div className="flex items-center gap-2 mb-4">
                 <Youtube className="w-7 h-7 text-red-600" />
                 <h2 className="text-2xl font-bold text-slate-900">YouTube Channels</h2>
               </div>
-              <p className="text-slate-600">YouTube channel management coming soon...</p>
+              <p className="text-slate-600">
+                YouTube Community Posts require YouTube Partner Program membership, so the Community
+                Post API is gated. Channel video uploads need a separate OAuth flow — coming later.
+              </p>
             </div>
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// PlatformSection: generic "Fetch → pick → connect → persist" card used for
+// Instagram, LinkedIn, and Twitter/X. Mirrors the Facebook section's UX.
+// ---------------------------------------------------------------------------
+type PlatformOption = {
+  id: string;
+  name: string;
+  handle?: string;
+  avatar?: string;
+  extra?: any;
+};
+
+type PlatformSectionProps = {
+  icon: React.ReactNode;
+  title: string;
+  subtitle: string;
+  accentBg: string;
+  loading: boolean;
+  onFetch: () => void | Promise<void>;
+  connected: ConnectedAccount[];
+  available: PlatformOption[];
+  onConnect: (opt: PlatformOption) => void | Promise<void>;
+  onDisconnect: (id: string) => void | Promise<void>;
+  helpLines: string[];
+};
+
+function PlatformSection({
+  icon,
+  title,
+  subtitle,
+  accentBg,
+  loading,
+  onFetch,
+  connected,
+  available,
+  onConnect,
+  onDisconnect,
+  helpLines,
+}: PlatformSectionProps) {
+  return (
+    <div className="bg-white rounded-xl shadow-sm p-6">
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h2 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
+            {icon}
+            {title}
+          </h2>
+          <p className="text-slate-600 mt-1">{subtitle}</p>
+        </div>
+        <button
+          onClick={onFetch}
+          disabled={loading}
+          className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-all flex items-center gap-2 font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {loading ? (
+            <>
+              <Loader2 className="w-5 h-5 animate-spin" />
+              Loading...
+            </>
+          ) : (
+            <>
+              <RefreshCw className="w-5 h-5" />
+              Fetch Accounts
+            </>
+          )}
+        </button>
+      </div>
+
+      {connected.length > 0 && (
+        <div className="mb-6">
+          <h3 className="text-sm font-semibold text-slate-700 mb-3">
+            Connected ({connected.length})
+          </h3>
+          <div className="space-y-3">
+            {connected.map((acc) => (
+              <div
+                key={acc.id}
+                className="flex items-center justify-between p-4 bg-green-50 border border-green-200 rounded-lg"
+              >
+                <div className="flex items-center gap-3">
+                  {acc.avatar ? (
+                    <img src={acc.avatar} alt="" className="w-10 h-10 rounded-full object-cover" />
+                  ) : (
+                    <div
+                      className={`w-10 h-10 ${accentBg} rounded-full flex items-center justify-center text-white`}
+                    >
+                      {icon}
+                    </div>
+                  )}
+                  <div>
+                    <p className="font-semibold text-slate-900">{acc.name}</p>
+                    {acc.handle && <p className="text-xs text-slate-500">{acc.handle}</p>}
+                    {acc.category && <p className="text-xs text-slate-500">{acc.category}</p>}
+                  </div>
+                </div>
+                <button
+                  onClick={() => onDisconnect(acc.id)}
+                  className="px-4 py-2 bg-red-100 text-red-700 rounded-lg hover:bg-red-200 transition-colors flex items-center gap-2 font-semibold"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  Disconnect
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {available.length > 0 && (
+        <div>
+          <h3 className="text-sm font-semibold text-slate-700 mb-3">
+            Available ({available.length})
+          </h3>
+          <div className="space-y-3">
+            {available.map((opt) => (
+              <div
+                key={opt.id}
+                className="flex items-center justify-between p-4 bg-slate-50 border border-slate-200 rounded-lg"
+              >
+                <div className="flex items-center gap-3">
+                  {opt.avatar ? (
+                    <img src={opt.avatar} alt="" className="w-10 h-10 rounded-full object-cover" />
+                  ) : (
+                    <div
+                      className={`w-10 h-10 ${accentBg} rounded-full flex items-center justify-center text-white opacity-80`}
+                    >
+                      {icon}
+                    </div>
+                  )}
+                  <div>
+                    <p className="font-semibold text-slate-900">{opt.name}</p>
+                    {opt.handle && <p className="text-xs text-slate-500">{opt.handle}</p>}
+                  </div>
+                </div>
+                <button
+                  onClick={() => onConnect(opt)}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2 font-semibold"
+                >
+                  <Plus className="w-4 h-4" />
+                  Connect
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {connected.length === 0 && available.length === 0 && (
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-6">
+          <h3 className="font-semibold text-blue-900 mb-3">How to connect:</h3>
+          <ol className="list-decimal list-inside space-y-2 text-sm text-blue-800">
+            {helpLines.map((line, i) => (
+              <li key={i}>{line}</li>
+            ))}
+            <li>
+              Come back here and click <strong>"Fetch Accounts"</strong>
+            </li>
+            <li>Select which accounts to connect — they persist across sessions</li>
+          </ol>
+        </div>
+      )}
     </div>
   );
 }

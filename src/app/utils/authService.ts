@@ -1,7 +1,7 @@
-// Authentication Service
-// Handles user login, signup, and session management
+// Authentication Service — talks to local Node.js/MySQL backend via REST.
+// Tokens are JWTs issued by the backend and stored in localStorage.
 
-import { supabase } from './supabaseClient';
+import { API_BASE_URL } from './apiConfig';
 
 export interface User {
   id: string;
@@ -9,162 +9,101 @@ export interface User {
   name?: string;
 }
 
-// Sign up a new user
+const ACCESS_KEY = 'motopsy_access_token';
+const REFRESH_KEY = 'motopsy_refresh_token';
+const USER_KEY = 'motopsy_user';
+
+// --- Sign up ---
 export const signUp = async (email: string, password: string, name: string) => {
   try {
-    // First, sign up the user with Supabase client (creates account)
-    const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        data: {
-          name: name
-        },
-        emailRedirectTo: undefined, // No email confirmation
-      }
+    const signupRes = await fetch(`${API_BASE_URL}/auth/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password, name }),
     });
+    const signupData = await signupRes.json();
 
-    if (signUpError) {
-      console.error('Sign up error:', signUpError);
-      return { success: false, error: signUpError.message };
+    if (!signupRes.ok || signupData.success === false) {
+      return { success: false, error: signupData.error || 'Sign up failed' };
     }
 
-    console.log('✅ User signed up successfully:', signUpData.user?.id);
-
-    // Automatically sign in after signup
-    const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
-
-    if (signInError) {
-      console.error('Auto sign-in error:', signInError);
-      return { success: false, error: signInError.message };
-    }
-
-    // Store session info
-    if (signInData.session) {
-      localStorage.setItem('motopsy_access_token', signInData.session.access_token);
-      localStorage.setItem('motopsy_refresh_token', signInData.session.refresh_token);
-      localStorage.setItem('motopsy_user', JSON.stringify({
-        id: signInData.user.id,
-        email: signInData.user.email,
-        name: signInData.user.user_metadata?.name,
-      }));
-    }
-
-    return { 
-      success: true, 
-      user: signInData.user,
-      session: signInData.session
-    };
-  } catch (error: any) {
-    console.error('Sign up error:', error);
-    return { success: false, error: error.message || 'Sign up failed' };
+    // Auto sign in
+    const signin = await signIn(email, password);
+    return signin;
+  } catch (err: any) {
+    console.error('Sign up error:', err);
+    return { success: false, error: err.message || 'Sign up failed' };
   }
 };
 
-// Sign in existing user
+// --- Sign in ---
 export const signIn = async (email: string, password: string) => {
   try {
-    console.log('🔐 Attempting to sign in:', email);
-
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
+    const res = await fetch(`${API_BASE_URL}/auth/signin`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
     });
+    const data = await res.json();
 
-    if (error) {
-      console.error('❌ Sign in error:', error);
-      return { success: false, error: error.message };
+    if (!res.ok || !data.success) {
+      return { success: false, error: data.error || 'Invalid login credentials' };
     }
 
-    if (!data.session || !data.user) {
-      console.error('❌ No session or user returned');
-      return { success: false, error: 'Authentication failed - no session' };
-    }
+    const { session, user } = data;
 
-    console.log('✅ Sign in successful!');
-    console.log('User ID:', data.user.id);
-    console.log('Access token length:', data.session.access_token.length);
+    localStorage.setItem(ACCESS_KEY, session.access_token);
+    localStorage.setItem(REFRESH_KEY, session.refresh_token || session.access_token);
+    localStorage.setItem(
+      USER_KEY,
+      JSON.stringify({ id: user.id, email: user.email, name: user.name })
+    );
 
-    // Store session info in localStorage
-    localStorage.setItem('motopsy_access_token', data.session.access_token);
-    localStorage.setItem('motopsy_refresh_token', data.session.refresh_token);
-    localStorage.setItem('motopsy_user', JSON.stringify({
-      id: data.user.id,
-      email: data.user.email,
-      name: data.user.user_metadata?.name,
-    }));
-
-    console.log('✅ Session stored in localStorage');
-
-    return { 
-      success: true, 
-      user: data.user,
-      session: data.session,
-    };
-  } catch (error: any) {
-    console.error('❌ Sign in error:', error);
-    return { success: false, error: error.message || 'Sign in failed' };
+    return { success: true, user, session };
+  } catch (err: any) {
+    console.error('Sign in error:', err);
+    return { success: false, error: err.message || 'Sign in failed' };
   }
 };
 
-// Sign out
+// --- Sign out ---
 export const signOut = () => {
-  localStorage.removeItem('motopsy_access_token');
-  localStorage.removeItem('motopsy_refresh_token');
-  localStorage.removeItem('motopsy_user');
-  
-  // Also sign out from Supabase
-  supabase.auth.signOut();
-  
-  // Reload to login page
+  localStorage.removeItem(ACCESS_KEY);
+  localStorage.removeItem(REFRESH_KEY);
+  localStorage.removeItem(USER_KEY);
   window.location.reload();
 };
 
-// Get stored access token
-export const getAccessToken = (): string | null => {
-  return localStorage.getItem('motopsy_access_token');
-};
+// --- Accessors ---
+export const getAccessToken = (): string | null => localStorage.getItem(ACCESS_KEY);
 
-// Get current user from localStorage
 export const getCurrentUser = (): User | null => {
-  const userStr = localStorage.getItem('motopsy_user');
-  if (!userStr) return null;
-  
+  const s = localStorage.getItem(USER_KEY);
+  if (!s) return null;
   try {
-    return JSON.parse(userStr);
+    return JSON.parse(s);
   } catch {
     return null;
   }
 };
 
-// Check if user is authenticated
-export const isAuthenticated = (): boolean => {
-  return !!getAccessToken() && !!getCurrentUser();
-};
+export const isAuthenticated = (): boolean => !!getAccessToken() && !!getCurrentUser();
 
-// Validate session with server
+// --- Session validation ---
 export const validateSession = async (): Promise<boolean> => {
+  const token = getAccessToken();
+  if (!token) return false;
   try {
-    const { data, error } = await supabase.auth.getSession();
-    
-    if (error || !data.session) {
-      console.log('Session validation failed, clearing local storage');
+    const res = await fetch(`${API_BASE_URL}/auth/session`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) {
       signOut();
       return false;
     }
-
-    // Update stored token if it changed
-    if (data.session.access_token !== getAccessToken()) {
-      localStorage.setItem('motopsy_access_token', data.session.access_token);
-      localStorage.setItem('motopsy_refresh_token', data.session.refresh_token);
-    }
-
     return true;
-  } catch (error) {
-    console.error('Session validation error:', error);
+  } catch (err) {
+    console.error('Session validation error:', err);
     return false;
   }
 };

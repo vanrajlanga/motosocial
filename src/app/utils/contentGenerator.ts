@@ -50,20 +50,36 @@ export const generateContent = async (keyword: string, captionSize: 'HE' | 'GNP'
         messages: [
           {
             role: 'system',
-            content: 'You are a professional social media content creator. Create engaging, high-quality social media posts that are concise, attention-grabbing, and optimized for engagement. Include relevant emojis where appropriate. STRICTLY follow the character limit provided.',
+            content:
+              'You are the social media voice of MOTOPSY — writing EXCLUSIVELY for the Indian market. ' +
+              'Every post must target Indian consumers AND must carry the Motopsy brand. Follow these HARD rules on every post without exception:\n' +
+              '1. BRANDING (non-negotiable): every post MUST\n' +
+              '   - Mention the brand word "Motopsy" naturally in the post body at least once (e.g., "at Motopsy", "with Motopsy", "the Motopsy way", "— Motopsy").\n' +
+              '   - Include the hashtag #Motopsy. Prefer also #MotopsyAI or #MotopsyIndia where it fits. These are in addition to topic hashtags.\n' +
+              '2. Currency: ALWAYS use Indian Rupees with the ₹ symbol (e.g., ₹5,00,000). NEVER use $, USD, dollars, or any non-INR currency.\n' +
+              '3. Numbers: use the Indian numbering system (lakh, crore) where it reads naturally (e.g., "₹2.5 lakh", "₹1 crore").\n' +
+              '4. Cultural context: references should fit India — cities (Delhi, Mumbai, Bengaluru, Chennai, Hyderabad, Pune), festivals (Diwali, Holi, Eid, Onam), brands (Maruti Suzuki, Tata, Mahindra, Hyundai, Bajaj, Flipkart, Paytm, Zomato, OLA).\n' +
+              '5. Language: primarily English, but natural Hinglish sprinkles ("dost", "paisa vasool", "sahi hai") are welcome when they fit. Avoid US-centric idioms.\n' +
+              '6. Examples/phone/money: any example numbers should look Indian (₹, +91 phone, PIN codes).\n' +
+              '7. Tone: warm, conversational, Indian-market appropriate. Include relevant emojis.\n' +
+              'STRICTLY follow the character limit provided. Output only the post text.',
           },
           {
             role: 'user',
-            content: `Create a compelling social media post about: "${keyword}". 
+            content: `Create a compelling social media post for INDIAN audiences about: "${keyword}".
 
-IMPORTANT REQUIREMENTS:
+HARD REQUIREMENTS:
 - ${characterLimit}
+- Brand: mention "Motopsy" in the body AND include #Motopsy (plus topic hashtags).
+- Target market: India only
+- Currency: Indian Rupees (₹) — never $ or USD
+- Use Indian context (cities, brands, festivals, people) where relevant to the topic
 - Engaging and attention-grabbing
 - Include relevant emojis
 - Professional yet conversational tone
-- Optimized for social media engagement
+- Optimized for Indian social media engagement (Instagram, Facebook, LinkedIn India)
 
-Just provide the post text, no additional commentary. STRICTLY stay within the character limit specified above.`,
+Output ONLY the post text, no preamble. STRICTLY stay within the character limit.`,
           },
         ],
         temperature: 0.7,
@@ -77,15 +93,42 @@ Just provide the post text, no additional commentary. STRICTLY stay within the c
     }
 
     const data = await response.json();
-    const generatedContent = data.choices[0]?.message?.content?.trim();
+    let generatedContent = data.choices[0]?.message?.content?.trim();
 
     if (!generatedContent) {
       throw new Error('No content generated from OpenAI');
     }
+
+    // Safety-net: the system prompt already requires "Motopsy" + "#Motopsy",
+    // but if the model ever slips we patch it ourselves so the brand ALWAYS
+    // appears in the final post. Keeps the caption coherent rather than
+    // awkwardly stapled on.
+    generatedContent = ensureMotopsyBranding(generatedContent);
 
     return generatedContent;
   } catch (error: any) {
     console.error('Error generating content:', error);
     throw new Error(error.message || 'Failed to generate content');
   }
+};
+
+const ensureMotopsyBranding = (text: string): string => {
+  let out = text;
+
+  // 1. Ensure #Motopsy is present (case-insensitive). If any #Motopsy-style tag
+  // exists (e.g. #motopsyai, #motopsyindia), leave it; otherwise append #Motopsy.
+  if (!/#motopsy/i.test(out)) {
+    const sep = /\n\s*#/.test(out) ? ' ' : '\n\n';
+    out = `${out}${sep}#Motopsy`;
+  }
+
+  // 2. Ensure the brand word "Motopsy" appears in the body (not only as a
+  // hashtag). Strip hashtag matches before testing.
+  const bodyOnly = out.replace(/#\w+/g, '');
+  if (!/motopsy/i.test(bodyOnly)) {
+    // Prepend a short brand bump. Keep it light so it doesn't feel tacked on.
+    out = `From Motopsy 👇\n${out}`;
+  }
+
+  return out;
 };

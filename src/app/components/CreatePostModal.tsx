@@ -239,22 +239,20 @@ export function CreatePostModal({ isOpen, onClose }: CreatePostModalProps) {
       // Use server to get Unsplash image (bypasses CORS!)
       console.log('📥 Fetching image from server...');
       
-      const { projectId, publicAnonKey } = await import('/utils/supabase/info');
-      
-      const response = await fetch(
-        `https://${projectId}.supabase.co/functions/v1/make-server-782899ec/generate-image`,
-        {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${publicAnonKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ 
-            query: searchQuery,
-            caption: caption 
-          }),
-        }
-      );
+      const { API_BASE_URL } = await import('../utils/apiConfig');
+      const { getAccessToken } = await import('../utils/authService');
+      const token = getAccessToken();
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
+      const response = await fetch(`${API_BASE_URL}/generate-image`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          query: searchQuery,
+          caption: caption,
+        }),
+      });
       
       if (!response.ok) {
         const errorText = await response.text();

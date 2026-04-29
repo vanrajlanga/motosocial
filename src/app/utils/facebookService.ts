@@ -1,10 +1,10 @@
 // Facebook Graph API Service
 // Fetches user's Facebook pages and manages connections
 
-import { projectId, publicAnonKey } from '/utils/supabase/info';
 import { getAccessToken } from './authService';
+import { API_BASE_URL as BACKEND_BASE } from './apiConfig';
 
-const API_BASE_URL = `https://${projectId}.supabase.co/functions/v1/make-server-782899ec`;
+const API_BASE_URL = BACKEND_BASE;
 
 interface FacebookPage {
   id: string;
@@ -175,9 +175,9 @@ export const saveConnectedFacebookPages = async (pages: ConnectedFacebookPage[])
   };
   localStorage.setItem('motopsy_social_connections', JSON.stringify(connections));
   
-  // Save to Supabase cloud
+  // Save to backend (MySQL). localStorage is only a UX cache on top of this.
   if (!accessToken) {
-    console.warn('No access token available, saving to localStorage only');
+    console.warn('[fb-pages] no auth token — saving to localStorage only');
     facebookPagesCache = pages;
     return false;
   }
@@ -187,37 +187,70 @@ export const saveConnectedFacebookPages = async (pages: ConnectedFacebookPage[])
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${accessToken}`,
+        Authorization: `Bearer ${accessToken}`,
       },
       body: JSON.stringify({ pages }),
     });
 
-    const data = await response.json();
+    const data = await response.json().catch(() => ({}));
 
     if (response.ok && data.success) {
-      // Update cache
       facebookPagesCache = pages;
-      console.log('✅ Facebook pages saved to cloud successfully!');
+      console.log('[fb-pages] persisted to server, count =', pages.length);
       return true;
-    } else {
-      console.error('Failed to save Facebook pages:', data.error);
-      return false;
     }
+    console.error('[fb-pages] server rejected save:', response.status, data);
+    return false;
   } catch (error) {
-    console.error('Error saving Facebook pages:', error);
+    console.error('[fb-pages] network error during save:', error);
     return false;
   }
 };
 
 /**
- * Connect a Facebook page
+ * Refresh stored page-access-tokens for already-connected pages, using a
+ * USER access token. FB returns fresh page tokens here; we update the
+ * matching entries in our connected list and persist. Returns the count
+ * of pages that got a new token. Doesn't touch un-matched entries.
  */
-export const connectFacebookPage = (page: FacebookPage): void => {
-  const connectedPages = getConnectedFacebookPages();
-  
-  // Check if page is already connected
-  const exists = connectedPages.some(p => p.pageId === page.id);
-  if (exists) {
+export const refreshConnectedPageTokens = async (
+  userAccessToken: string
+): Promise<{ refreshed: number; pages: ConnectedFacebookPage[] }> => {
+  if (!userAccessToken?.trim()) throw new Error('Facebook user access token is required');
+
+  const fresh = await fetchFacebookPages(userAccessToken);
+  const current = await loadFacebookPages();
+
+  let refreshed = 0;
+  const updated = current.map((p) => {
+    const match = fresh.find((f) => f.id === p.pageId);
+    if (match && match.access_token && match.access_token !== p.pageAccessToken) {
+      refreshed += 1;
+      return { ...p, pageAccessToken: match.access_token };
+    }
+    return p;
+  });
+
+  if (refreshed > 0) {
+    const saved = await saveConnectedFacebookPages(updated);
+    if (!saved) throw new Error('Failed to persist refreshed page tokens.');
+  }
+  return { refreshed, pages: updated };
+};
+
+/**
+ * Connect a Facebook page. Returns the updated list (so callers don't have
+ * to re-fetch from the server — that was racing against the in-flight save).
+ * Throws if the backend save fails so the UI can surface the error.
+ */
+export const connectFacebookPage = async (
+  page: FacebookPage
+): Promise<ConnectedFacebookPage[]> => {
+  // Always hydrate the current list from the server first, so we never clobber
+  // pages that were connected on another device / session.
+  const current = await loadFacebookPages();
+
+  if (current.some((p) => p.pageId === page.id)) {
     throw new Error('This page is already connected');
   }
 
@@ -229,17 +262,31 @@ export const connectFacebookPage = (page: FacebookPage): void => {
     connectedAt: new Date().toISOString(),
   };
 
-  connectedPages.push(newPage);
-  saveConnectedFacebookPages(connectedPages);
+  const updated = [...current, newPage];
+  const saved = await saveConnectedFacebookPages(updated);
+  if (!saved) {
+    throw new Error(
+      'Failed to persist connected page to server. Please check your login and try again.'
+    );
+  }
+  return updated;
 };
 
 /**
- * Disconnect a Facebook page
+ * Disconnect a Facebook page. Same persistence contract as connect.
  */
-export const disconnectFacebookPage = (pageId: string): void => {
-  const connectedPages = getConnectedFacebookPages();
-  const filtered = connectedPages.filter(p => p.pageId !== pageId);
-  saveConnectedFacebookPages(filtered);
+export const disconnectFacebookPage = async (
+  pageId: string
+): Promise<ConnectedFacebookPage[]> => {
+  const current = await loadFacebookPages();
+  const filtered = current.filter((p) => p.pageId !== pageId);
+  const saved = await saveConnectedFacebookPages(filtered);
+  if (!saved) {
+    throw new Error(
+      'Failed to persist disconnection to server. Please check your login and try again.'
+    );
+  }
+  return filtered;
 };
 
 /**

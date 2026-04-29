@@ -1,9 +1,9 @@
 // API Service for OpenAI and other AI services
 
-import { projectId, publicAnonKey } from '/utils/supabase/info';
 import { getAccessToken } from './authService';
+import { API_BASE_URL as BACKEND_BASE } from './apiConfig';
 
-const API_BASE_URL = `https://${projectId}.supabase.co/functions/v1/make-server-782899ec`;
+const API_BASE_URL = BACKEND_BASE;
 
 export interface APIKeys {
   openai: string;
@@ -66,13 +66,8 @@ export const loadAPIKeys = async (): Promise<APIKeys> => {
 
   try {
     const headers: HeadersInit = {};
-    
-    // Only add Authorization if we have a token
     if (accessToken) {
       headers['Authorization'] = `Bearer ${accessToken}`;
-    } else {
-      // Use public anon key as fallback
-      headers['Authorization'] = `Bearer ${publicAnonKey}`;
     }
 
     const response = await fetch(`${API_BASE_URL}/user/api-keys`, {
@@ -104,33 +99,18 @@ export const loadAPIKeys = async (): Promise<APIKeys> => {
   }
 };
 
-// Save API keys to Supabase (cloud storage)
+// Save API keys to backend
 export const saveAPIKeys = async (keys: APIKeys): Promise<boolean> => {
   console.log('🔑 Attempting to save API keys...');
-  
-  // Get fresh session from Supabase directly (don't use localStorage)
+
   try {
-    const { supabase } = await import('./supabaseClient');
-    const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
-    
-    console.log('Session check:', {
-      hasSession: !!sessionData.session,
-      hasAccessToken: !!sessionData.session?.access_token,
-      error: sessionError?.message
-    });
-    
-    if (sessionError || !sessionData.session?.access_token) {
+    const accessToken = getAccessToken();
+    if (!accessToken) {
       console.error('❌ No valid session');
-      alert('⚠️ Your session is invalid. Please log out completely (clear browser data) and log in again.');
+      alert('⚠️ Your session is invalid. Please log in again.');
       return false;
     }
-    
-    const accessToken = sessionData.session.access_token;
-    
-    console.log('📡 Sending request with fresh access token');
-    console.log('Token length:', accessToken.length);
-    console.log('Token preview:', accessToken.substring(0, 50) + '...');
-    
+
     const response = await fetch(`${API_BASE_URL}/user/api-keys`, {
       method: 'POST',
       headers: {
