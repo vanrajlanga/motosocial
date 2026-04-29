@@ -15,8 +15,31 @@ interface CalendarViewProps {
   posts: ScheduledPost[];
 }
 
+// Convert a date-like input (ISO string OR plain YYYY-MM-DD) to a local-time
+// YYYY-MM-DD key, matching how the calendar grid is laid out in the user's
+// timezone.
+const toLocalDateKey = (value: string): string => {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value.slice(0, 10); // fallback: assume YYYY-MM-DD already
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+
 export function CalendarView({ posts }: CalendarViewProps) {
-  const [currentDate, setCurrentDate] = useState(new Date(2026, 2, 1)); // March 2026
+  // Open the calendar on the month of the FIRST scheduled post, falling back
+  // to "today" if there are no posts. This way the user immediately sees
+  // their schedule instead of an empty placeholder month.
+  const initialMonth = (() => {
+    const first = posts
+      .map((p) => new Date(p.scheduledDate))
+      .filter((d) => !Number.isNaN(d.getTime()))
+      .sort((a, b) => a.getTime() - b.getTime())[0];
+    const seed = first || new Date();
+    return new Date(seed.getFullYear(), seed.getMonth(), 1);
+  })();
+  const [currentDate, setCurrentDate] = useState(initialMonth);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
 
   const daysOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -50,12 +73,10 @@ export function CalendarView({ posts }: CalendarViewProps) {
 
   const getPostsForDate = (day: number | null) => {
     if (!day) return [];
-    
     const year = currentDate.getFullYear();
     const month = currentDate.getMonth();
     const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-    
-    return posts.filter(post => post.scheduledDate === dateStr);
+    return posts.filter((post) => toLocalDateKey(post.scheduledDate) === dateStr);
   };
 
   const previousMonth = () => {
@@ -279,7 +300,7 @@ export function CalendarView({ posts }: CalendarViewProps) {
           </div>
           
           <div className="p-6 space-y-3">
-            {posts.filter(p => p.scheduledDate === selectedDate).map((post) => (
+            {posts.filter((p) => toLocalDateKey(p.scheduledDate) === selectedDate).map((post) => (
               <div
                 key={post.id}
                 className="border border-slate-200 rounded-lg p-4 hover:shadow-md transition-shadow"
