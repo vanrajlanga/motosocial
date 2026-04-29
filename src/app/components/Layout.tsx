@@ -1,5 +1,5 @@
 import { Outlet, NavLink } from 'react-router';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { 
   LayoutDashboard, 
   Target, 
@@ -18,13 +18,40 @@ import { signOut, getCurrentUser } from '../utils/authService';
 export function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const userMenuRef = useRef<HTMLDivElement | null>(null);
   const currentUser = getCurrentUser();
 
+  // Close the topbar user menu when clicking outside or pressing Escape
+  useEffect(() => {
+    if (!userMenuOpen) return;
+    const onClick = (e: MouseEvent) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) {
+        setUserMenuOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setUserMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onClick);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onClick);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [userMenuOpen]);
+
   const handleLogout = () => {
+    setUserMenuOpen(false);
     if (window.confirm('Are you sure you want to logout?')) {
       signOut();
     }
   };
+
+  const initials = (currentUser?.name || currentUser?.email || 'M')
+    .trim()
+    .charAt(0)
+    .toUpperCase();
 
   const navigation = [
     { name: 'Dashboard', path: '/', icon: LayoutDashboard },
@@ -65,14 +92,56 @@ export function Layout() {
               </div>
             </div>
             
-            <div className="flex items-center gap-3">
-              <div className="hidden sm:block text-right">
-                <p className="text-sm font-semibold text-slate-900">Marketing Team</p>
-                <p className="text-xs text-slate-600">motopsy.com</p>
-              </div>
-              <div className="w-10 h-10 bg-gradient-to-br from-green-400 to-blue-500 rounded-full flex items-center justify-center text-white font-bold">
-                M
-              </div>
+            <div className="relative" ref={userMenuRef}>
+              <button
+                onClick={() => setUserMenuOpen((v) => !v)}
+                aria-haspopup="menu"
+                aria-expanded={userMenuOpen}
+                className="flex items-center gap-3 px-2 py-1 rounded-lg hover:bg-slate-100 transition-colors"
+              >
+                <div className="hidden sm:block text-right">
+                  <p className="text-sm font-semibold text-slate-900">
+                    {currentUser?.name || 'Admin'}
+                  </p>
+                  <p className="text-xs text-slate-600">
+                    {currentUser?.email || 'motopsy.com'}
+                  </p>
+                </div>
+                <div className="w-10 h-10 bg-gradient-to-br from-green-400 to-blue-500 rounded-full flex items-center justify-center text-white font-bold">
+                  {initials}
+                </div>
+              </button>
+
+              {userMenuOpen && (
+                <div
+                  role="menu"
+                  className="absolute right-0 mt-2 w-64 bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden z-[60]"
+                >
+                  <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
+                    <p className="text-sm font-semibold text-slate-900 truncate">
+                      {currentUser?.name || 'Admin'}
+                    </p>
+                    <p className="text-xs text-slate-600 truncate">
+                      {currentUser?.email || ''}
+                    </p>
+                  </div>
+                  <NavLink
+                    to="/settings"
+                    onClick={() => setUserMenuOpen(false)}
+                    className="flex items-center gap-3 px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 transition-colors"
+                  >
+                    <SettingsIcon className="w-4 h-4" />
+                    Settings
+                  </NavLink>
+                  <button
+                    onClick={handleLogout}
+                    className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-red-600 hover:bg-red-50 transition-colors border-t border-slate-200"
+                  >
+                    <LogOut className="w-4 h-4" />
+                    Logout
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </div>
