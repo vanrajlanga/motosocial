@@ -1,0 +1,42 @@
+# SPA fallback for React Router on Apache (Plesk default).
+# Any request that doesn't resolve to a real file or directory is rewritten
+# to /index.html so the React app handles the route client-side.
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteBase /
+
+    # Pass real files / directories through untouched
+    RewriteCond %{REQUEST_FILENAME} -f [OR]
+    RewriteCond %{REQUEST_FILENAME} -d
+    RewriteRule ^ - [L]
+
+    # API + uploads are served by the Node backend via nginx upstream;
+    # they should never hit Apache, but if they ever do, don't SPA-fallback.
+    RewriteRule ^api/ - [L]
+    RewriteRule ^uploads/ - [L]
+
+    # Everything else → SPA shell
+    RewriteRule ^ /index.html [L]
+</IfModule>
+
+# Long cache for content-hashed Vite asset bundles. Vite filenames include
+# a content hash so they can be cached forever; the entry HTML stays short.
+<IfModule mod_expires.c>
+    ExpiresActive On
+    ExpiresByType text/css                   "access plus 1 year"
+    ExpiresByType application/javascript     "access plus 1 year"
+    ExpiresByType image/png                  "access plus 1 year"
+    ExpiresByType image/jpeg                 "access plus 1 year"
+    ExpiresByType image/webp                 "access plus 1 year"
+    ExpiresByType image/svg+xml              "access plus 1 year"
+    ExpiresByType font/woff2                 "access plus 1 year"
+    ExpiresDefault                           "access plus 1 hour"
+</IfModule>
+
+# Standard hardening
+<IfModule mod_headers.c>
+    Header set X-Content-Type-Options "nosniff"
+    Header set Referrer-Policy "strict-origin-when-cross-origin"
+    Header set X-Frame-Options "SAMEORIGIN"
+</IfModule>
