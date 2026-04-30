@@ -139,6 +139,17 @@ export const cancelScheduledPost = async (id: string): Promise<void> => {
   if (!r.ok) throw new Error('Failed to cancel');
 };
 
+export const retryFailedScheduledPosts = async (ids?: string[]): Promise<number> => {
+  const r = await fetch(`${API_BASE_URL}/scheduled-posts/retry-failed`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify(ids && ids.length > 0 ? { ids } : {}),
+  });
+  const data = await r.json();
+  if (!r.ok || !data.success) throw new Error(data.error || 'Retry failed');
+  return data.retried || 0;
+};
+
 export const bulkDeleteScheduledPosts = async (ids: string[]): Promise<number> => {
   if (ids.length === 0) return 0;
   const r = await fetch(`${API_BASE_URL}/scheduled-posts/bulk-delete`, {

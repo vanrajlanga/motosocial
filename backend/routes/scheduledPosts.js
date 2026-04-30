@@ -65,6 +65,39 @@ router.delete('/:id', requireAuth, async (req, res) => {
   }
 });
 
+// Re-arm every failed post for the user so the cron worker picks them up
+// again. Optionally takes { ids: [...] } to limit which failed rows get
+// retried; without it, all failed rows for the user are retried.
+//
+// scheduled_for is also bumped to NOW for any row whose original slot has
+// already passed, otherwise cron would still skip them on the next tick.
+router.post('/retry-failed', requireAuth, async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.filter(Boolean) : null;
+
+    let where = `user_id = ? AND status = 'failed'`;
+    const params = [req.user.sub];
+    if (ids && ids.length > 0) {
+      where += ` AND id IN (?)`;
+      params.push(ids);
+    }
+
+    const [r] = await pool.query(
+      `UPDATE scheduled_posts
+          SET status = 'pending',
+              error_msg = NULL,
+              scheduled_for = CASE WHEN scheduled_for < NOW() THEN NOW() ELSE scheduled_for END
+        WHERE ${where}`,
+      params
+    );
+
+    res.json({ success: true, retried: r.affectedRows || 0 });
+  } catch (err) {
+    console.error('[scheduled-posts:retry-failed]', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // Bulk delete — only removes pending/failed/cancelled rows owned by the user.
 router.post('/bulk-delete', requireAuth, async (req, res) => {
   try {

@@ -20,6 +20,7 @@ import {
   listScheduledPosts,
   cancelScheduledPost,
   bulkDeleteScheduledPosts,
+  retryFailedScheduledPosts,
   updateScheduledPost,
   prefillScheduledPost,
   regenerateImage as regenerateImageApi,
@@ -58,6 +59,7 @@ export function ContentCalendar() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [prefillingAll, setPrefillingAll] = useState(false);
   const [prefillProgress, setPrefillProgress] = useState({ done: 0, total: 0 });
+  const [retrying, setRetrying] = useState(false);
 
   const refresh = async () => {
     setLoading(true);
@@ -136,6 +138,26 @@ export function ContentCalendar() {
       else next.add(id);
       return next;
     });
+  };
+
+  const handleRetryAllFailed = async () => {
+    const failedCount = posts.filter((p) => p.status === 'failed').length;
+    if (failedCount === 0) {
+      alert('No failed posts to retry.');
+      return;
+    }
+    if (!window.confirm(`Re-queue ${failedCount} failed post(s) so the cron worker tries again? Past-due slots will fire on the next minute tick.`))
+      return;
+    setRetrying(true);
+    try {
+      const n = await retryFailedScheduledPosts();
+      alert(`✅ Re-queued ${n} post(s). The cron worker will pick them up within ~60 seconds.`);
+      await refresh();
+    } catch (err: any) {
+      alert(`❌ ${err.message}`);
+    } finally {
+      setRetrying(false);
+    }
   };
 
   const handleBulkDelete = async () => {
@@ -276,24 +298,47 @@ export function ContentCalendar() {
               )}
             </div>
 
-            <button
-              onClick={handlePrefillAll}
-              disabled={prefillingAll || stats.pending === 0}
-              className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors flex items-center gap-2 text-sm font-semibold disabled:opacity-50"
-              title="Generate caption + image for every pending post that's missing them"
-            >
-              {prefillingAll ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  Pre-filling… {prefillProgress.done}/{prefillProgress.total}
-                </>
-              ) : (
-                <>
-                  <Wand2 className="w-4 h-4" />
-                  Pre-fill all pending content
-                </>
+            <div className="flex items-center gap-2 flex-wrap">
+              {stats.failed > 0 && (
+                <button
+                  onClick={handleRetryAllFailed}
+                  disabled={retrying}
+                  className="px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 transition-colors flex items-center gap-2 text-sm font-semibold disabled:opacity-50"
+                  title="Re-queue every failed post so the cron worker tries again"
+                >
+                  {retrying ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Retrying…
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCw className="w-4 h-4" />
+                      Retry all failed ({stats.failed})
+                    </>
+                  )}
+                </button>
               )}
-            </button>
+
+              <button
+                onClick={handlePrefillAll}
+                disabled={prefillingAll || stats.pending === 0}
+                className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors flex items-center gap-2 text-sm font-semibold disabled:opacity-50"
+                title="Generate caption + image for every pending post that's missing them"
+              >
+                {prefillingAll ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Pre-filling… {prefillProgress.done}/{prefillProgress.total}
+                  </>
+                ) : (
+                  <>
+                    <Wand2 className="w-4 h-4" />
+                    Pre-fill all pending content
+                  </>
+                )}
+              </button>
+            </div>
           </div>
 
           <div className="p-6">
