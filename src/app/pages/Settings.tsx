@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Key, Facebook, Instagram, Linkedin, Youtube, Twitter, Save, CheckCircle2, AlertCircle, Eye, EyeOff, ExternalLink, Plus, Trash2, RefreshCw, Loader2, Bug } from 'lucide-react';
-import { getAPIKeys, saveAPIKeys, loadAPIKeys } from '../utils/apiService';
+import { getAPIKeys, saveAPIKeys, loadAPIKeys, refreshFacebookToken } from '../utils/apiService';
 import { fetchFacebookPages, validateFacebookToken, getConnectedFacebookPages, connectFacebookPage, disconnectFacebookPage, loadFacebookPages, saveConnectedFacebookPages, refreshConnectedPageTokens, type ConnectedFacebookPage } from '../utils/facebookService';
 import {
   fetchInstagramAccounts,
@@ -59,11 +59,14 @@ export function Settings() {
     imgurClientId: '',
     imgbbApiKey: '',
     facebookAccessToken: '',
+    facebookAppId: '',
+    facebookAppSecret: '',
     instagramAccessToken: '',
     linkedinAccessToken: '',
     youtubeAccessToken: '',
     twitterAccessToken: '',
   });
+  const [refreshingFbToken, setRefreshingFbToken] = useState(false);
 
   // Load API keys and connected pages on mount
   useEffect(() => {
@@ -219,6 +222,38 @@ export function Settings() {
     }
   };
 
+  // Exchange the saved short-lived FB token for a long-lived 60-day one and
+  // re-mint every connected page's access token so it never expires either.
+  const handleRefreshFbToken = async () => {
+    if (!apiKeys.facebookAppId || !apiKeys.facebookAppSecret) {
+      alert('⚠️ Add your Facebook App ID and App Secret first, then click Save API Keys.');
+      return;
+    }
+    if (!apiKeys.facebookAccessToken) {
+      alert('⚠️ Paste your short-lived Facebook user access token, then click Save API Keys.');
+      return;
+    }
+    setRefreshingFbToken(true);
+    try {
+      // Make sure the current input values are persisted before exchange
+      await saveAPIKeys(apiKeys);
+      const result = await refreshFacebookToken();
+      const fresh = await loadAPIKeys();
+      setApiKeys(fresh);
+      const expiresLine = result.expiresInDays
+        ? `\nExpires in ~${result.expiresInDays} days (${new Date(result.expiresAt!).toLocaleDateString()})`
+        : '';
+      alert(
+        `✅ Facebook token extended to long-lived.${expiresLine}` +
+          (result.refreshedPages > 0 ? `\n🔄 Refreshed ${result.refreshedPages} page token(s).` : '')
+      );
+    } catch (err: any) {
+      alert(`❌ ${err.message}`);
+    } finally {
+      setRefreshingFbToken(false);
+    }
+  };
+
   // Fetch Facebook Pages using the access token
   const handleFetchFacebookPages = async () => {
     if (!apiKeys.facebookAccessToken || apiKeys.facebookAccessToken.trim().length === 0) {
@@ -354,8 +389,22 @@ export function Settings() {
       label: 'Facebook Access Token',
       key: 'facebookAccessToken',
       placeholder: 'EAAUx...',
-      description: 'Get from Facebook Graph API Explorer with pages_show_list, pages_read_engagement, pages_manage_posts permissions',
+      description: 'Short-lived token from Graph API Explorer. After saving + entering App ID/Secret below, click "Refresh / Extend" to convert to a long-lived (60-day) token.',
       link: 'https://developers.facebook.com/tools/explorer/',
+    },
+    {
+      label: 'Facebook App ID',
+      key: 'facebookAppId',
+      placeholder: '1234567890123456',
+      description: 'From your Meta App dashboard → Settings → Basic. Required to extend short-lived tokens.',
+      link: 'https://developers.facebook.com/apps/',
+    },
+    {
+      label: 'Facebook App Secret',
+      key: 'facebookAppSecret',
+      placeholder: 'shhhh...',
+      description: 'From your Meta App dashboard → Settings → Basic. Click "Show" to reveal it once. Kept server-side only.',
+      link: 'https://developers.facebook.com/apps/',
     },
     {
       label: 'Instagram Access Token',
@@ -515,11 +564,39 @@ export function Settings() {
                   </div>
                 ))}
               </div>
+
+              {/* Long-lived FB token exchange */}
+              <div className="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                <p className="text-sm font-semibold text-blue-900 mb-1">
+                  Extend your Facebook token (recommended)
+                </p>
+                <p className="text-xs text-blue-800 mb-3">
+                  Tokens from Graph API Explorer expire in ~1 hour by default. Save the token plus
+                  your App ID and App Secret above, then click below to swap it for a 60-day
+                  long-lived token. Your connected Page tokens get re-minted at the same time and
+                  stop expiring while the user-token is alive.
+                </p>
+                <button
+                  onClick={handleRefreshFbToken}
+                  disabled={refreshingFbToken}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-all flex items-center gap-2 text-sm font-semibold disabled:opacity-50"
+                >
+                  {refreshingFbToken ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" /> Extending…
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCw className="w-4 h-4" /> Refresh / Extend Facebook Token
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
 
             {/* Save Button */}
             <div className="flex justify-between items-center">
-              <Link 
+              <Link
                 to="/system-status"
                 className="px-6 py-3 bg-slate-200 text-slate-700 rounded-lg hover:bg-slate-300 transition-all flex items-center gap-2 font-semibold"
               >

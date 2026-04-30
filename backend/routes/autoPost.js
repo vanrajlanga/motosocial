@@ -4,7 +4,7 @@
 
 import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import { pool } from '../db.js';
+import { pool, kvGet, kvSet } from '../db.js';
 import { requireAuth } from '../middleware/auth.js';
 import { generateAndPublishNow } from '../services/contentPipeline.js';
 
@@ -176,6 +176,119 @@ router.post('/run-now', requireAuth, async (req, res) => {
   } catch (err) {
     console.error('[auto-post:run-now]', err);
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/auto-post/refresh-fb-token
+// ─────────────────────────────────────────────────────────────────────────────
+// Exchanges the user's currently-saved short-lived Facebook user-access-token
+// for a long-lived one (~60 days) using the user's saved Facebook App ID +
+// App Secret. Writes the new token back into kv_store, then refreshes every
+// connected Page's stored access token (which become never-expiring once
+// derived from a long-lived user token).
+//
+// Body: { token?: string }   — optional; if omitted we use whatever is saved.
+//
+// Pre-reqs in Settings → API Keys:
+//   - facebookAppId
+//   - facebookAppSecret
+//   - facebookAccessToken (the short-lived one to extend)
+//
+// Returns the new token + expiry timestamp.
+router.post('/refresh-fb-token', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user.sub;
+
+    const defaults = (await kvGet('default_api_keys')) || {};
+    const userKeys = (await kvGet(`user_api_keys_${userId}`)) || {};
+    const merged = { ...defaults };
+    for (const [k, v] of Object.entries(userKeys)) {
+      if (v != null && String(v).trim().length > 0) merged[k] = v;
+    }
+
+    const appId = (merged.facebookAppId || '').trim();
+    const appSecret = (merged.facebookAppSecret || '').trim();
+    const inputToken = (req.body?.token || merged.facebookAccessToken || '').trim();
+
+    if (!appId || !appSecret) {
+      return res.status(400).json({
+        success: false,
+        error:
+          'Save your Facebook App ID and App Secret in Settings → API Keys first. ' +
+          'You can find both in your Meta App dashboard → Settings → Basic.',
+      });
+    }
+    if (!inputToken) {
+      return res.status(400).json({
+        success: false,
+        error: 'Save a Facebook user access token in Settings → API Keys first.',
+      });
+    }
+
+    // 1. Exchange short-lived → long-lived
+    const exchangeUrl =
+      `https://graph.facebook.com/v18.0/oauth/access_token` +
+      `?grant_type=fb_exchange_token` +
+      `&client_id=${encodeURIComponent(appId)}` +
+      `&client_secret=${encodeURIComponent(appSecret)}` +
+      `&fb_exchange_token=${encodeURIComponent(inputToken)}`;
+
+    const exRes = await fetch(exchangeUrl);
+    const exData = await exRes.json();
+    if (!exRes.ok || !exData.access_token) {
+      return res.status(400).json({
+        success: false,
+        error: exData?.error?.message || `Facebook exchange failed (HTTP ${exRes.status})`,
+      });
+    }
+    const longLivedToken = exData.access_token;
+    const expiresInSeconds = exData.expires_in || 0;
+    const expiresAt = expiresInSeconds
+      ? new Date(Date.now() + expiresInSeconds * 1000).toISOString()
+      : null;
+
+    // 2. Save back to user_api_keys
+    const updatedKeys = { ...userKeys, facebookAccessToken: longLivedToken };
+    await kvSet(`user_api_keys_${userId}`, updatedKeys);
+
+    // 3. Refresh page tokens — page tokens derived from a long-lived user
+    //    token are themselves never-expiring (as long as the user remains
+    //    an admin of the page).
+    let refreshedPages = 0;
+    try {
+      const pagesRes = await fetch(
+        `https://graph.facebook.com/v18.0/me/accounts?fields=id,name,access_token,category&access_token=${encodeURIComponent(longLivedToken)}`
+      );
+      const pagesData = await pagesRes.json();
+      if (pagesRes.ok && Array.isArray(pagesData?.data)) {
+        const stored = (await kvGet(`user_facebook_pages_${userId}`)) || [];
+        const updatedPages = stored.map((p) => {
+          const fresh = pagesData.data.find((f) => f.id === p.pageId);
+          if (fresh?.access_token && fresh.access_token !== p.pageAccessToken) {
+            refreshedPages += 1;
+            return { ...p, pageAccessToken: fresh.access_token };
+          }
+          return p;
+        });
+        if (refreshedPages > 0) {
+          await kvSet(`user_facebook_pages_${userId}`, updatedPages);
+        }
+      }
+    } catch (err) {
+      console.warn('[refresh-fb-token] page-refresh step failed:', err.message);
+    }
+
+    res.json({
+      success: true,
+      tokenPreview: `${longLivedToken.slice(0, 14)}…${longLivedToken.slice(-6)}`,
+      expiresAt,
+      expiresInDays: expiresInSeconds ? Math.floor(expiresInSeconds / 86400) : null,
+      refreshedPages,
+    });
+  } catch (err) {
+    console.error('[refresh-fb-token]', err);
+    res.status(500).json({ success: false, error: err.message || 'Server error' });
   }
 });
 

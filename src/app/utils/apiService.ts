@@ -15,6 +15,10 @@ export interface APIKeys {
   imgurClientId: string;
   imgbbApiKey: string;
   facebookAccessToken: string;
+  // App credentials needed to extend short-lived FB user tokens to long-lived
+  // (60-day) tokens. Without these, FB's user-token expires every ~1 hour.
+  facebookAppId: string;
+  facebookAppSecret: string;
   instagramAccessToken: string;
   linkedinAccessToken: string;
   youtubeAccessToken: string;
@@ -36,6 +40,8 @@ const DEFAULT_API_KEYS: APIKeys = {
   imgurClientId: '',
   imgbbApiKey: '',
   facebookAccessToken: '',
+  facebookAppId: '',
+  facebookAppSecret: '',
   instagramAccessToken: '',
   linkedinAccessToken: '',
   youtubeAccessToken: '',
@@ -140,6 +146,33 @@ export const saveAPIKeys = async (keys: APIKeys): Promise<boolean> => {
     alert(`❌ Error: ${error.message}`);
     return false;
   }
+};
+
+// Exchange the saved short-lived Facebook user token for a long-lived (~60d)
+// one. Requires facebookAppId + facebookAppSecret to also be saved.
+export const refreshFacebookToken = async (): Promise<{
+  tokenPreview: string;
+  expiresAt: string | null;
+  expiresInDays: number | null;
+  refreshedPages: number;
+}> => {
+  const accessToken = getAccessToken();
+  const r = await fetch(`${API_BASE_URL}/auto-post/refresh-fb-token`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+    },
+    body: JSON.stringify({}),
+  });
+  const data = await r.json();
+  if (!r.ok || !data.success) {
+    throw new Error(data?.error || 'Failed to refresh Facebook token');
+  }
+  // Bust the cache so the next read of api keys sees the new token
+  apiKeysCache = null;
+  await loadAPIKeys();
+  return data;
 };
 
 // Generate image using OpenAI DALL-E
