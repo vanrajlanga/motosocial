@@ -11,6 +11,7 @@ import exposeRoutes from './routes/expose.js';
 import keywordsRoutes from './routes/keywords.js';
 import autoPostRoutes from './routes/autoPost.js';
 import scheduledPostsRoutes from './routes/scheduledPosts.js';
+import socialRoutes from './routes/social.js';
 import { startCronWorker } from './services/cronWorker.js';
 
 const app = express();
@@ -29,6 +30,7 @@ app.use('/api', exposeRoutes);
 app.use('/api/keywords', keywordsRoutes);
 app.use('/api/auto-post', autoPostRoutes);
 app.use('/api/scheduled-posts', scheduledPostsRoutes);
+app.use('/api/social', socialRoutes);
 
 // Back-compat: mirror the old Supabase Edge Function path shape so older
 // frontend builds that still point to /functions/v1/make-server-782899ec/*

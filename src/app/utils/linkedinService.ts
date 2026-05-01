@@ -1,9 +1,10 @@
 // LinkedIn account discovery.
-// Uses the user's LinkedIn access token (OAuth 2.0) to:
-//   1) Fetch profile via /v2/userinfo (OpenID Connect)
-//   2) Fetch organizations the user administers via /v2/organizationAcls
-// Returns profile + org entries that the user can pick to connect.
+// Now goes through our backend (/api/social/linkedin/discover) because
+// LinkedIn doesn't send CORS headers for /v2/* — direct browser calls are
+// blocked.
 
+import { API_BASE_URL } from './apiConfig';
+import { getAccessToken } from './authService';
 import { makeConnectionStore, type ConnectedAccount } from './socialConnections';
 
 const store = makeConnectionStore('linkedin-accounts');
@@ -16,63 +17,25 @@ export type DiscoveredLinkedInAccount = {
   accessToken: string;
 };
 
-// Browser -> LinkedIn direct call requires CORS. LinkedIn does enable CORS
-// on /v2/userinfo but rejects it on /v2/organizationAcls. We still attempt
-// both; if orgAcls fails with a network/CORS error we just return the person.
 export const fetchLinkedInAccounts = async (
   accessToken: string
 ): Promise<DiscoveredLinkedInAccount[]> => {
   if (!accessToken?.trim()) throw new Error('LinkedIn access token is required');
 
-  const results: DiscoveredLinkedInAccount[] = [];
-
-  // 1) Personal profile via OpenID userinfo (needs "openid profile" scope)
-  try {
-    const r = await fetch('https://api.linkedin.com/v2/userinfo', {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    if (!r.ok) {
-      const err = await r.json().catch(() => ({}));
-      throw new Error(err.message || `LinkedIn returned ${r.status}. Check token & scopes.`);
-    }
-    const me = await r.json();
-    results.push({
-      urn: me.sub ? `urn:li:person:${me.sub}` : '',
-      kind: 'person',
-      name: me.name || `${me.given_name || ''} ${me.family_name || ''}`.trim() || 'LinkedIn Profile',
-      avatar: me.picture,
-      accessToken,
-    });
-  } catch (err: any) {
-    throw new Error(
-      err.message || 'Failed to validate LinkedIn token. Make sure it has "openid profile" scope.'
-    );
+  const jwt = getAccessToken();
+  const r = await fetch(`${API_BASE_URL}/social/linkedin/discover`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(jwt ? { Authorization: `Bearer ${jwt}` } : {}),
+    },
+    body: JSON.stringify({ accessToken }),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok || !data.success) {
+    throw new Error(data.error || `Backend returned ${r.status}`);
   }
-
-  // 2) Organizations the user admins (optional — requires rw_organization_admin scope)
-  try {
-    const r = await fetch(
-      'https://api.linkedin.com/v2/organizationAcls?q=roleAssignee&role=ADMINISTRATOR&state=APPROVED&projection=(elements*(organization~(id,localizedName,vanityName,logoV2(original~:playableStreams))))',
-      { headers: { Authorization: `Bearer ${accessToken}` } }
-    );
-    if (r.ok) {
-      const data = await r.json();
-      for (const el of data.elements || []) {
-        const org = el['organization~'];
-        if (!org) continue;
-        results.push({
-          urn: `urn:li:organization:${org.id}`,
-          kind: 'organization',
-          name: org.localizedName,
-          accessToken,
-        });
-      }
-    }
-  } catch {
-    // CORS or network — silently skip; personal profile still works.
-  }
-
-  return results;
+  return (data.accounts || []) as DiscoveredLinkedInAccount[];
 };
 
 export const toConnectedLI = (
