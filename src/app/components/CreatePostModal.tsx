@@ -46,13 +46,38 @@ export function CreatePostModal({ isOpen, onClose }: CreatePostModalProps) {
   const [socialAccounts, setSocialAccounts] = useState<SocialAccount[]>([]);
 
   useEffect(() => {
-    if (isOpen) {
-      const accounts: SocialAccount[] = [];
+    if (!isOpen) return;
+    let cancelled = false;
 
-      // Load Facebook pages from new structure
-      const facebookPages = getConnectedFacebookPages();
-      facebookPages.forEach((page) => {
-        accounts.push({
+    (async () => {
+      // Pull Facebook pages from the cached store (loadFacebookPages also
+      // refreshes from backend, but the cache is good for instant render)
+      const fbPages = getConnectedFacebookPages();
+
+      // Load IG / LinkedIn / Twitter from their backend-backed stores in
+      // parallel. These replace the legacy 'motopsy_social_connections'
+      // localStorage shape that earlier versions used.
+      const [{ loadFacebookPages }, igMod, liMod, twMod] = await Promise.all([
+        import('../utils/facebookService'),
+        import('../utils/instagramService'),
+        import('../utils/linkedinService'),
+        import('../utils/twitterService'),
+      ]);
+
+      const [freshFb, igAccts, liAccts, twAccts] = await Promise.all([
+        loadFacebookPages(),
+        igMod.loadConnectedInstagram(),
+        liMod.loadConnectedLinkedIn(),
+        twMod.loadConnectedTwitter(),
+      ]);
+
+      const merged: SocialAccount[] = [];
+
+      // Prefer the freshly-loaded FB pages; fall back to the cache to keep
+      // the modal responsive when offline.
+      const finalFb = freshFb.length > 0 ? freshFb : fbPages;
+      finalFb.forEach((page: any) => {
+        merged.push({
           id: 'facebook-' + page.pageId,
           platform: 'facebook',
           name: page.pageName,
@@ -63,66 +88,71 @@ export function CreatePostModal({ isOpen, onClose }: CreatePostModalProps) {
         });
       });
 
-      // Load other platforms from old structure for now
+      igAccts.forEach((a) => {
+        merged.push({
+          id: 'instagram-' + a.id,
+          platform: 'instagram',
+          name: a.name,
+          username: a.handle || a.name,
+          connected: true,
+          icon: Instagram,
+          color: 'bg-pink-600',
+        });
+      });
+
+      liAccts.forEach((a) => {
+        merged.push({
+          id: 'linkedin-' + a.id,
+          platform: 'linkedin',
+          name: a.name,
+          username: a.category || 'LinkedIn',
+          connected: true,
+          icon: Linkedin,
+          color: 'bg-blue-700',
+        });
+      });
+
+      twAccts.forEach((a) => {
+        merged.push({
+          id: 'twitter-' + a.id,
+          platform: 'twitter',
+          name: a.name,
+          username: a.handle || a.name,
+          connected: true,
+          icon: Twitter,
+          color: 'bg-sky-500',
+        });
+      });
+
+      // Legacy fallback: if a user still has YouTube saved in the old
+      // localStorage shape, surface it. Once the proper YT module ships
+      // this whole branch can go away.
       const savedConnections = localStorage.getItem('motopsy_social_connections');
       if (savedConnections) {
-        const connections = JSON.parse(savedConnections);
-
-        // Instagram
-        if (connections.instagram?.connected) {
-          accounts.push({
-            id: 'instagram-' + connections.instagram.username,
-            platform: 'instagram',
-            name: connections.instagram.username || 'Instagram Account',
-            username: connections.instagram.username || '@myaccount',
-            connected: true,
-            icon: Instagram,
-            color: 'bg-pink-600',
-          });
-        }
-
-        // LinkedIn
-        if (connections.linkedin?.connected) {
-          accounts.push({
-            id: 'linkedin-' + connections.linkedin.pageName,
-            platform: 'linkedin',
-            name: connections.linkedin.pageName || 'LinkedIn Page',
-            username: connections.linkedin.pageName || 'My Company',
-            connected: true,
-            icon: Linkedin,
-            color: 'bg-blue-700',
-          });
-        }
-
-        // YouTube
-        if (connections.youtube?.connected) {
-          accounts.push({
-            id: 'youtube-' + connections.youtube.channelId,
-            platform: 'youtube',
-            name: connections.youtube.channelName || 'YouTube Channel',
-            username: connections.youtube.channelName || 'My Channel',
-            connected: true,
-            icon: Youtube,
-            color: 'bg-red-600',
-          });
-        }
-
-        // Twitter
-        if (connections.twitter?.connected) {
-          accounts.push({
-            id: 'twitter-' + connections.twitter.username,
-            platform: 'twitter',
-            name: connections.twitter.username || 'Twitter Account',
-            username: connections.twitter.username || '@myaccount',
-            connected: true,
-            icon: Twitter,
-            color: 'bg-sky-500',
-          });
+        try {
+          const connections = JSON.parse(savedConnections);
+          if (connections.youtube?.connected) {
+            merged.push({
+              id: 'youtube-' + connections.youtube.channelId,
+              platform: 'youtube',
+              name: connections.youtube.channelName || 'YouTube Channel',
+              username: connections.youtube.channelName || 'My Channel',
+              connected: true,
+              icon: Youtube,
+              color: 'bg-red-600',
+            });
+          }
+        } catch {
+          /* ignore */
         }
       }
 
-      setSocialAccounts(accounts);
-    }
+      if (!cancelled) setSocialAccounts(merged);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [isOpen]);
 
   const toggleAccount = (accountId: string) => {
