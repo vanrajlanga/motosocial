@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { kvGet, kvSet } from '../db.js';
 import { requireAuth, optionalAuth } from '../middleware/auth.js';
+import { ensureLongLivedTokenForUser } from '../services/facebookTokens.js';
 
 const router = Router();
 
@@ -55,7 +56,32 @@ router.post('/api-keys', requireAuth, async (req, res) => {
     const { apiKeys } = req.body || {};
     if (!apiKeys) return res.status(400).json({ success: false, error: 'No apiKeys provided' });
     await kvSet(`user_api_keys_${req.user.sub}`, apiKeys);
-    res.json({ success: true });
+
+    // If a Facebook user token + App ID + App Secret are all present, silently
+    // make sure the token is long-lived (60-day) before we leave. This means
+    // users can paste a fresh short-lived token from Graph API Explorer and
+    // never have to think about TTLs again — the system maintains itself.
+    let fbAutoExtend = null;
+    try {
+      const r = await ensureLongLivedTokenForUser(req.user.sub);
+      if (r.exchanged) {
+        fbAutoExtend = {
+          extended: true,
+          expiresAt: r.expiresAt ? new Date(r.expiresAt).toISOString() : null,
+          refreshedPages: r.refreshedPages || 0,
+        };
+        console.log(
+          `[api-keys] auto-extended FB token for ${req.user.sub} → expires ${fbAutoExtend.expiresAt}, refreshed ${fbAutoExtend.refreshedPages} page(s)`
+        );
+      }
+    } catch (err) {
+      // Don't fail the save just because the FB exchange couldn't complete —
+      // surface the reason as a soft warning so the UI can show it.
+      console.warn('[api-keys] FB auto-extend skipped:', err.message);
+      fbAutoExtend = { extended: false, warning: err.message };
+    }
+
+    res.json({ success: true, fbAutoExtend });
   } catch (err) {
     console.error('[save api-keys]', err);
     res.status(500).json({ success: false, error: err.message });

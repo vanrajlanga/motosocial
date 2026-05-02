@@ -11,6 +11,7 @@ import path from 'path';
 import { Blob } from 'buffer';
 import { v4 as uuidv4 } from 'uuid';
 import { pool, kvGet } from '../db.js';
+import { ensureLongLivedTokenForUser } from './facebookTokens.js';
 
 const UPLOADS_DIR = path.resolve('uploads');
 
@@ -121,24 +122,53 @@ const localFilePathFromUrl = (urlStr) => {
   }
 };
 
-const publishToFacebookPage = async (page, caption, imageUrl, userToken) => {
+// Mint a fresh page access token from /me/accounts using the supplied user
+// token. Returns null on failure so the caller can retry / surface error.
+const mintPageToken = async (userToken, pageId) => {
+  if (!userToken) return null;
+  try {
+    const r = await fetch(
+      `https://graph.facebook.com/v18.0/me/accounts?fields=id,access_token&access_token=${encodeURIComponent(userToken)}`
+    );
+    const body = await r.json();
+    if (!r.ok) return null;
+    const match = (body?.data || []).find((p) => p.id === pageId);
+    return match?.access_token || null;
+  } catch (e) {
+    console.warn('[pipeline] mintPageToken error:', e.message);
+    return null;
+  }
+};
+
+const publishToFacebookPage = async (page, caption, imageUrl, userToken, userId) => {
   const photoEndpoint = `https://graph.facebook.com/v18.0/${page.pageId}/photos`;
 
   // Always mint a fresh page token via /me/accounts (eliminates stale-token bugs)
-  let pageAccessToken = page.pageAccessToken;
-  if (userToken) {
+  let pageAccessToken = (await mintPageToken(userToken, page.pageId)) || page.pageAccessToken;
+
+  // If even the fresh-mint failed because the user token itself is expired,
+  // try one silent extend and retry the mint. Most failures are caused by
+  // a saved short-lived token that crossed its 1-hour TTL.
+  let attemptedExtend = false;
+  if (!pageAccessToken && userId) {
+    attemptedExtend = true;
     try {
-      const r = await fetch(
-        `https://graph.facebook.com/v18.0/me/accounts?fields=id,access_token&access_token=${encodeURIComponent(userToken)}`
-      );
-      const body = await r.json();
-      if (r.ok) {
-        const match = (body?.data || []).find((p) => p.id === page.pageId);
-        if (match?.access_token) pageAccessToken = match.access_token;
+      const ext = await ensureLongLivedTokenForUser(userId);
+      if (ext.exchanged) {
+        // Re-read keys with the freshly-extended token
+        const userKeys = (await kvGet(`user_api_keys_${userId}`)) || {};
+        const newToken = userKeys.facebookAccessToken;
+        pageAccessToken = (await mintPageToken(newToken, page.pageId)) || pageAccessToken;
+        console.log('[pipeline] auto-extended FB token mid-publish for', userId);
       }
     } catch (e) {
-      console.warn('[pipeline] page token refresh failed:', e.message);
+      console.warn('[pipeline] auto-extend failed:', e.message);
     }
+  }
+  if (!pageAccessToken) {
+    throw new Error(
+      'Could not mint a Facebook Page access token. The saved user token is likely expired — paste a fresh one in Settings → API Keys → Save (the system will auto-extend it to 60 days).'
+    );
   }
 
   // Read image bytes (local path preferred; remote URL otherwise)
@@ -147,7 +177,8 @@ const publishToFacebookPage = async (page, caption, imageUrl, userToken) => {
   const localPath = localFilePathFromUrl(imageUrl);
   if (localPath && fs.existsSync(localPath)) {
     buf = fs.readFileSync(localPath);
-    contentType = imageUrl.endsWith('.jpg') || imageUrl.endsWith('.jpeg') ? 'image/jpeg' : 'image/png';
+    contentType =
+      imageUrl.endsWith('.jpg') || imageUrl.endsWith('.jpeg') ? 'image/jpeg' : 'image/png';
   } else if (imageUrl) {
     const r = await fetch(imageUrl);
     if (r.ok) {
@@ -157,15 +188,36 @@ const publishToFacebookPage = async (page, caption, imageUrl, userToken) => {
   }
   if (!buf) throw new Error('No image bytes available');
 
-  const form = new FormData();
-  form.append('source', new Blob([buf], { type: contentType }), 'post.png');
-  form.append('caption', caption);
-  form.append('access_token', pageAccessToken);
+  const callPhoto = async (token) => {
+    const form = new FormData();
+    form.append('source', new Blob([buf], { type: contentType }), 'post.png');
+    form.append('caption', caption);
+    form.append('access_token', token);
+    const r = await fetch(photoEndpoint, { method: 'POST', body: form });
+    return { ok: r.ok, status: r.status, result: await r.json() };
+  };
 
-  const r = await fetch(photoEndpoint, { method: 'POST', body: form });
-  const result = await r.json();
-  if (!r.ok || !result.id) {
-    throw new Error(result?.error?.message || `FB returned ${r.status}`);
+  let { ok, result } = await callPhoto(pageAccessToken);
+
+  // On 190 (token expired/invalid), do one silent extend + retry. Belt-and
+  // -braces — the proactive mintPageToken usually catches this earlier.
+  if (!ok && result?.error?.code === 190 && !attemptedExtend && userId) {
+    try {
+      const ext = await ensureLongLivedTokenForUser(userId);
+      if (ext.exchanged) {
+        const userKeys = (await kvGet(`user_api_keys_${userId}`)) || {};
+        const fresh = await mintPageToken(userKeys.facebookAccessToken, page.pageId);
+        if (fresh) {
+          ({ ok, result } = await callPhoto(fresh));
+        }
+      }
+    } catch (e) {
+      console.warn('[pipeline] retry after 190 failed:', e.message);
+    }
+  }
+
+  if (!ok || !result?.id) {
+    throw new Error(result?.error?.message || `FB returned non-OK`);
   }
   return { postId: result.id, postUrl: `https://www.facebook.com/${result.id}` };
 };
@@ -211,7 +263,13 @@ export const processScheduledPost = async (postRow, port = process.env.PORT || 4
   const results = [];
   for (const page of fbPages) {
     try {
-      const r = await publishToFacebookPage(page, caption, imageUrl, keys.facebookAccessToken);
+      const r = await publishToFacebookPage(
+        page,
+        caption,
+        imageUrl,
+        keys.facebookAccessToken,
+        userId
+      );
       results.push({ platform: 'facebook', pageId: page.pageId, success: true, ...r });
     } catch (err) {
       results.push({
